@@ -279,7 +279,7 @@ def _is_metadata_or_clutter(text: str) -> bool:
     if any(kw in t for kw in clutter_keywords):
         return True
     # Title/author front-matter lines
-    short_title_terms = {'the tale of', 'peter rabbit', 'beatrix potter', 'by beatrix potter'}
+    short_title_terms = {'the tale of', 'peter rabbit', 'beatrix potter', 'by beatrix potter', 'by'}
     if t in short_title_terms:
         return True
     return False
