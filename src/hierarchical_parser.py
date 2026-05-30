@@ -505,8 +505,8 @@ def parse_manuscript_for_segment(self, segment_text: str, file_name: str, chapte
                     found_speaker = True
                     speaker_lock_counter -= 1
 
-                # 2.5 Local LLM (Ollama) resolution path for dialogue segments
-                if self.ollama_model and not found_speaker:
+                # 2.5 Local LLM (Ollama) resolution path for dialogue segments (Tier 3 only)
+                if self.ollama_model and not found_speaker and production_tier >= 3:
                     try:
                         # Construct Ollama prompt with full context and character roster
                         prompt = f"""
