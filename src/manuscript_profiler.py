@@ -31,8 +31,8 @@ logger = logging.getLogger("ManuscriptProfiler")
 class ManuscriptProfiler:
     """Extracts aggregated metadata and statistics designed for interactive GUI dashboards."""
 
-    def __init__(self, use_gpu: bool = False):
-        self.analyzer = ManuscriptAnalyzer(use_gpu=use_gpu)
+    def __init__(self, use_gpu: bool = False, production_tier: int = 1):
+        self.analyzer = ManuscriptAnalyzer(use_gpu=use_gpu, production_tier=production_tier)
 
     def profile_book(self, manuscript_path: str, hierarchy_data: dict = None) -> Dict[str, Any]:
         """

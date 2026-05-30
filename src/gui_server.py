@@ -68,7 +68,7 @@ PIPELINE_STATUS = {
     "qc_report": None
 }
 
-def bg_run_pipeline(filename: str):
+def bg_run_pipeline(filename: str, tier: int = 1):
     """
     Executes the FirespeakerPipeline full run on a background thread.
     Updates the global PIPELINE_STATUS object for real-time progress polling.
@@ -78,12 +78,12 @@ def bg_run_pipeline(filename: str):
         from src.main import FirespeakerPipeline
         filepath = os.path.join("data/corpus", filename)
         
-        logger.info(f"[BG Compiler] Initializing pipeline run for {filename}...")
+        logger.info(f"[BG Compiler] Initializing pipeline run for {filename} (Tier {tier})...")
         PIPELINE_STATUS["status"] = "running"
         PIPELINE_STATUS["step"] = "Preparing workspace & loading character drawers..."
         PIPELINE_STATUS["progress"] = 15
         
-        pipeline = FirespeakerPipeline()
+        pipeline = FirespeakerPipeline(production_tier=tier)
         
         logger.info("[BG Compiler] Ingesting and parsing script lines...")
         PIPELINE_STATUS["step"] = "Running manuscript text parsing & LLM dialogue attribution..."
@@ -265,7 +265,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             else:
                 logger.info(f"Analyzing and profiling {filename} from scratch (Tier {tier})...")
                 parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
-                profiler = ManuscriptProfiler(use_gpu=False)
+                profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
                 
                 hierarchy_data = parser.parse_hierarchy(filepath)
                 profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
@@ -320,7 +320,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             
             # Analyze immediately
             parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
-            profiler = ManuscriptProfiler(use_gpu=False)
+            profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
             
             hierarchy_data = parser.parse_hierarchy(filepath)
             profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
@@ -394,9 +394,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 
             logger.info(f"Cache cleared for {filename}. Re-profiling manuscript...")
             
-            # 3. Re-run parsing and profiling under new database rules
-            parser = HierarchicalParser(use_gpu=False)
-            profiler = ManuscriptProfiler(use_gpu=False)
+            tier = params.get("tier", 1)
+            # Re-run parsing and profiling under new database rules
+            parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
+            profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
             
             hierarchy_data = parser.parse_hierarchy(filepath)
             profile_data = profiler.profile_book(filepath)
@@ -534,9 +535,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if os.path.exists(profile_cache):
                 os.remove(profile_cache)
                 
+            tier = params.get("tier", 1)
             # 5. Re-run parsing under new drawers/merges
-            parser = HierarchicalParser(use_gpu=False)
-            profiler = ManuscriptProfiler(use_gpu=False)
+            parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
+            profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
             
             hierarchy_data = parser.parse_hierarchy(filepath)
             profile_data = profiler.profile_book(filepath)
@@ -578,8 +580,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 self.send_json_error(400, "Audio synthesis pipeline is already running in background.")
                 return
                 
+            tier = params.get("tier", 1)
             # Trigger pipeline on a background thread
-            thread = threading.Thread(target=bg_run_pipeline, args=(filename,))
+            thread = threading.Thread(target=bg_run_pipeline, args=(filename, int(tier)))
             thread.start()
             
             response = json.dumps({"status": "running"}).encode("utf-8")

@@ -34,7 +34,7 @@ class HierarchicalParser:
     """Parses book manuscripts into deeply nested Part -> Chapter -> Scene structures."""
 
     def __init__(self, use_gpu: bool = False, production_tier: int = 1):
-        self.analyzer = ManuscriptAnalyzer(use_gpu=use_gpu)
+        self.analyzer = ManuscriptAnalyzer(use_gpu=use_gpu, production_tier=production_tier)
         self.production_tier = production_tier
 
     def _split_into_parts(self, text: str) -> List[Tuple[str, str]]:

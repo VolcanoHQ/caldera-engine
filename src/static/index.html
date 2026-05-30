@@ -1224,6 +1224,54 @@
                         <!-- Action buttons go here -->
                     </div>
                 </div>
+
+                <!-- Upgraded Narrative and Emotional Analytics Dashboard -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 24px;">
+                    <!-- Left Column: Dialogue Ratio and Character Share -->
+                    <div class="glass-card" style="padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+                        <h3 style="color: var(--accent-teal); font-size: 16px; font-weight: 700; margin: 0;">Prose vs. Dialogue Ratio</h3>
+                        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 14px;">
+                            <span style="color: var(--text-muted);">Narration vs. Dialogue</span>
+                            <strong id="dialogueRatioLabel" style="color: var(--text-main); font-family: var(--font-mono);">--% / --%</strong>
+                        </div>
+                        <div style="height: 12px; background: rgba(255,255,255,0.05); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; display: flex;">
+                            <div id="gaugeNarration" style="width: 0%; height: 100%; background: var(--accent-violet); transition: width 0.5s ease;"></div>
+                            <div id="gaugeDialogue" style="width: 0%; height: 100%; background: var(--accent-teal); transition: width 0.5s ease;"></div>
+                        </div>
+                        
+                        <h3 style="color: var(--accent-teal); font-size: 16px; font-weight: 700; margin: 12px 0 0 0;">Character Spoken Word Share</h3>
+                        <div id="charBreakdownList" style="display: flex; flex-direction: column; gap: 12px; max-height: 200px; overflow-y: auto; padding-right: 8px;">
+                            <!-- Dynamic char-share-row elements populated by JS -->
+                        </div>
+                    </div>
+                    
+                    <!-- Right Column: Emotional Breakdown Chart -->
+                    <div class="glass-card" style="padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+                        <h3 style="color: var(--accent-teal); font-size: 16px; font-weight: 700; margin: 0;">Emotional Sentiment Profile</h3>
+                        <div style="display: flex; align-items: flex-end; justify-content: space-around; height: 180px; padding: 10px 0; border-bottom: 1px solid var(--border-color); margin-top: 10px;">
+                            <!-- Joy -->
+                            <div style="display: flex; flex-direction: column; align-items: center; width: 45px; height: 100%; justify-content: flex-end;">
+                                <div id="barJoy" style="width: 24px; height: 0%; background: linear-gradient(to top, var(--accent-teal), #06b6d4); border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: height 0.6s ease; box-shadow: 0 0 10px rgba(20, 184, 166, 0.3);"></div>
+                                <span style="font-size: 11px; margin-top: 8px; color: var(--text-muted); font-weight: 600;">Joy</span>
+                            </div>
+                            <!-- Sadness -->
+                            <div style="display: flex; flex-direction: column; align-items: center; width: 45px; height: 100%; justify-content: flex-end;">
+                                <div id="barSadness" style="width: 24px; height: 0%; background: linear-gradient(to top, var(--accent-violet), #6366f1); border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: height 0.6s ease; box-shadow: 0 0 10px rgba(139, 92, 246, 0.3);"></div>
+                                <span style="font-size: 11px; margin-top: 8px; color: var(--text-muted); font-weight: 600;">Sad</span>
+                            </div>
+                            <!-- Tension -->
+                            <div style="display: flex; flex-direction: column; align-items: center; width: 45px; height: 100%; justify-content: flex-end;">
+                                <div id="barTension" style="width: 24px; height: 0%; background: linear-gradient(to top, var(--accent-rose), #f43f5e); border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: height 0.6s ease; box-shadow: 0 0 10px rgba(244, 63, 94, 0.3);"></div>
+                                <span style="font-size: 11px; margin-top: 8px; color: var(--text-muted); font-weight: 600;">Tension</span>
+                            </div>
+                            <!-- Neutral -->
+                            <div style="display: flex; flex-direction: column; align-items: center; width: 45px; height: 100%; justify-content: flex-end;">
+                                <div id="barNeutral" style="width: 24px; height: 0%; background: linear-gradient(to top, var(--text-dark), var(--text-muted)); border-radius: var(--radius-sm) var(--radius-sm) 0 0; transition: height 0.6s ease;"></div>
+                                <span style="font-size: 11px; margin-top: 8px; color: var(--text-muted); font-weight: 600;">Neutral</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1233,6 +1281,10 @@
             <div class="modal-header">
                 <h2>Upload Manuscript Book</h2>
                 <button class="btn-close" onclick="closeUploadModal()">&times;</button>
+            </div>
+            <div class="input-group" style="margin-bottom: 20px;">
+                <label for="uploadFileInput" style="color: var(--accent-teal); font-weight: 600;">Select Local Text File (.txt)</label>
+                <input type="file" id="uploadFileInput" accept=".txt" style="background: var(--bg-deep); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-main); padding: 8px 12px; width: 100%; outline: none; cursor: pointer; font-size: 13.5px;" onchange="handleLocalFileSelect(this)">
             </div>
             <div class="input-group">
                 <label for="uploadTitle">Book Filename (e.g. MyBook.txt)</label>
@@ -1517,6 +1569,9 @@
             const filename = select.value;
             if (!filename) return;
             
+            const selectedTierEl = document.querySelector('input[name="productionTier"]:checked');
+            const selectedTier = selectedTierEl ? selectedTierEl.value : "1";
+            
             showLoading("Verifying Speaker Roster", "Updating database overrides and invalidating cache...");
             
             try {
@@ -1525,6 +1580,7 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         filename: filename,
+                        tier: parseInt(selectedTier),
                         original_name: originalName,
                         canonical_name: canonicalName,
                         is_confirmed: isConfirmed
@@ -1906,6 +1962,22 @@
             document.getElementById("uploadModal").classList.remove("active");
             document.getElementById("uploadTitle").value = "";
             document.getElementById("uploadText").value = "";
+            document.getElementById("uploadFileInput").value = "";
+        }
+
+        function handleLocalFileSelect(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            // Automatically populate title field with the file name
+            document.getElementById("uploadTitle").value = file.name;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const contents = e.target.result;
+                document.getElementById("uploadText").value = contents;
+            };
+            reader.readAsText(file);
         }
 
         // Submit custom book upload via API
@@ -2129,6 +2201,9 @@
             
             const filename = document.getElementById("bookSelect").value;
             if (!filename) return;
+
+            const selectedTierEl = document.querySelector('input[name="productionTier"]:checked');
+            const selectedTier = selectedTierEl ? selectedTierEl.value : "1";
             
             if (!newName) {
                 alert("Character canonical name cannot be empty.");
@@ -2144,6 +2219,7 @@
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         filename: filename,
+                        tier: parseInt(selectedTier),
                         original_name: originalName,
                         new_name: newName,
                         voice_ref_path: voiceRef,
@@ -2194,6 +2270,9 @@
         async function triggerProcessManuscript() {
             const filename = document.getElementById("bookSelect").value;
             if (!filename) return;
+
+            const selectedTierEl = document.querySelector('input[name="productionTier"]:checked');
+            const selectedTier = selectedTierEl ? selectedTierEl.value : "1";
             
             const btn = document.getElementById("btnProcessManuscript");
             const icon = document.getElementById("processIcon");
@@ -2207,7 +2286,7 @@
                 const response = await fetch(`${API_BASE}/api/process_manuscript`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ filename: filename })
+                    body: JSON.stringify({ filename: filename, tier: parseInt(selectedTier) })
                 });
                 
                 if (!response.ok) {

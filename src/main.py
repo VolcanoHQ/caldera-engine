@@ -34,7 +34,7 @@ logger = logging.getLogger("FirespeakerStudio")
 class FirespeakerPipeline:
     """Master orchestrator managing cross-component relational and file flows."""
 
-    def __init__(self, workspace_dir: str = "scratch/pipeline_workspace"):
+    def __init__(self, workspace_dir: str = "scratch/pipeline_workspace", production_tier: int = 1):
         self.workspace_dir = workspace_dir
         self.mempalace_dir = "data/mempalace"
         self.outputs_dir = os.path.join(workspace_dir, "outputs")
@@ -44,7 +44,7 @@ class FirespeakerPipeline:
         os.makedirs(self.outputs_dir, exist_ok=True)
         
         # Initialize sub-engines
-        self.analyzer = ManuscriptAnalyzer(use_gpu=False)
+        self.analyzer = ManuscriptAnalyzer(use_gpu=False, production_tier=production_tier)
         self.palace = MemPalace(db_dir=self.mempalace_dir)
         self.synth = VoiceSynthesizer(mempalace_path=self.mempalace_dir, force_cpu=True)
         self.mixer = AudioMixer()

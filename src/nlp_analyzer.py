@@ -414,15 +414,22 @@ class ManuscriptAnalyzer:
     Core engine to parse raw book manuscripts and extract clean script structures.
     """
     
-    def __init__(self, use_gpu: bool = True):
+    def __init__(self, use_gpu: bool = True, production_tier: int = 1):
+        self.production_tier = production_tier
         self.use_gpu = use_gpu and HAS_XCORE and torch.cuda.is_available()
         self.device = "cuda:0" if self.use_gpu else "cpu"
         self.xcore_model = None
-        self.ollama_model = _detect_local_ollama()
+        
+        # Bypasses local LLM queries for Tier < 3 to ensure completely offline / rapid execution
+        if production_tier >= 3:
+            self.ollama_model = _detect_local_ollama()
+        else:
+            self.ollama_model = None
+            
         if self.ollama_model:
             logger.info(f"Ollama local LLM service detected active. Selected model: '{self.ollama_model}'")
         else:
-            logger.warning("Local Ollama model server not found. Falling back to spaCy and regex rules.")
+            logger.info("Local Ollama model server bypassed or disabled for rapid rule-based processing.")
             
         # Load xCoRe Model if available
         if HAS_XCORE:
