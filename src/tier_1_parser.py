@@ -1379,8 +1379,16 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
     _progress.clear(_book)
     logger.info(f"Starting Tier 1 Ingestion for: {file_path}")
     print(f"\n--- Starting Ingestion Pipeline for: {os.path.basename(file_path)} ---")
-    with open(file_path, "r", encoding="utf-8") as f:
-        raw_text = f.read()
+    if file_path.lower().endswith(".epub"):
+        # EPUB spine -> CHAPTER-marked plain text; the existing loops (and the
+        # scrubber -- Gutenberg EPUBs carry the license as spine items) take
+        # over from there unchanged.
+        from nlp_engine.epub_ingestion import epub_to_text
+        raw_text = epub_to_text(file_path)
+        print(f"  [EPUB] Converted spine to {raw_text.count(chr(10)+chr(10)+chr(10)) + 1} chapter block(s).")
+    else:
+        with open(file_path, "r", encoding="utf-8") as f:
+            raw_text = f.read()
         
     base_name = os.path.splitext(os.path.basename(file_path))[0]
     # Namespaced under tier1/ -- src/looped_analyzer.py writes its own (differently

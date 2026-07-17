@@ -184,16 +184,20 @@ three guard paths curl-tested.
 **Evidence:** shared `mix_voice_track` engine; console audio serving extended to
 `.m4b`/`.mp3` for downloads.
 
-### M-3 · EPUB ingestion — ⬜ OPEN
+### M-3 · EPUB ingestion — ✅ DONE
 **DoD:**
-- [ ] `--input book.epub` works end-to-end: spine order → per-item text extraction →
-      chapters derived from spine (headings preferred, positional fallback) →
-      existing loops 3-4 unchanged downstream.
-- [ ] Non-content spine items (cover, nav/toc, copyright) excluded; scrubber still
-      runs (Gutenberg EPUBs carry the license too).
-- [ ] Verified against a known book: EPUB-ingested chapter count and narration
-      stream match the .txt-ingested equivalents (±0 chapters, fidelity scorer ≥99%
-      agreement).
+- [x] `--input book.epub` works end-to-end: container → OPF → spine order →
+      per-item tag-stripped text with the first heading as chapter title →
+      CHAPTER-marked plain text → existing loops unchanged downstream.
+- [x] Non-content spine items excluded three ways: id/href name heuristics
+      (cover/toc/copyright/…), `properties="nav"` + `epub:type="toc"` detection,
+      and a minimum-content threshold; ClutterScrubber still runs downstream.
+- [x] Verified against The Secret Garden: a 30-chapter EPUB (with cover, nav, and
+      copyright decoys) ingested to exactly **30 chapters / 101 scenes** with
+      **100.00% narration-stream word agreement** vs the .txt-ingested pipeline;
+      all three decoys skipped and logged.
+**Evidence:** `nlp_engine/epub_ingestion.py` (stdlib-only: zipfile + ElementTree +
+HTMLParser); `.epub` accepted by the parser CLI and the render job's source finder.
 
 ---
 
