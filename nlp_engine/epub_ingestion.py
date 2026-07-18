@@ -148,6 +148,15 @@ def epub_to_text(path: str, min_chapter_chars: int = 300) -> str:
                 logger.info(f"EPUB: skipping short spine item '{href}' ({len(text)} chars).")
                 continue
             heading = ex.first_heading or ""
+            # Real-world Gutenberg EPUB3s carry header/license boilerplate as
+            # ordinary spine items with unhelpful filenames -- identify them by
+            # their own content, not their name. The downstream ClutterScrubber
+            # still runs, but a license item skipped here never mints a phantom
+            # "CHAPTER N. THE FULL PROJECT GUTENBERG LICENSE" heading at all.
+            probe = (heading + " " + text[:400]).lower()
+            if re.search(r"project gutenberg (?:license|ebook|literary archive)|gutenberg™? license|start of the project gutenberg", probe):
+                logger.info(f"EPUB: skipping boilerplate/license spine item '{href}'.")
+                continue
             # the heading line also appears at the top of the body text; drop it
             if heading and text[:len(heading) + 10].strip().lower().startswith(heading.lower()):
                 text = text[text.lower().find(heading.lower()) + len(heading):].lstrip()
