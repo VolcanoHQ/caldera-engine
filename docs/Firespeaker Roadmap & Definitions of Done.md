@@ -253,10 +253,24 @@ queued jobs killed before their running state (found during testing).
       shows the usage line.
 **Evidence:** audit-log rotation noted as a future concern at scale.
 
-### T2-4 · Plan → provider entitlement (paid fast lane) — ⬜ OPEN
-**DoD:** A project's plan selects its provider chain (free = current chain + resume
-slow lane; paid = premium keys, no quota waits); same validation contract regardless
-of provider.
+### T2-4 · Plan → provider entitlement (paid fast lane) — ✅ DONE
+**DoD:**
+- [x] A project's plan (declared through usage context by the render worker)
+      selects the chain: free/unset = byte-identical prior chain (asserted);
+      pro prepends a `gemini_paid` lane — same battle-tested Gemini path,
+      own key (`GEMINI_API_KEY_PAID`), own cooldown/quota bucket, paid-tier
+      RPM, no daily budget gate.
+- [x] Graceful degradation both ways: no paid key → pro silently equals free;
+      paid-lane failure → falls through to the free chain like any provider
+      miss (proved LIVE: dummy paid key → INVALID_ARGUMENT on both models →
+      free Gemini completed the task; audit shows the whole cascade with
+      plan=pro on every record).
+- [x] Task gates respected: `gemini_paid` satisfies a `("gemini",)` gate
+      (same quality class); single-provider wait-retry semantics unchanged.
+- [x] Same validation contract regardless of provider — schema + grounding
+      checks are downstream of the chain and untouched.
+**Evidence:** chain-assembly assertions for free/pro/gated; roster doc
+provider-policy section updated.
 
 ### T2-5 · Marketplace identities + payments — ⬜ OPEN
 **DoD:** Sellers/buyers are authenticated users; consent + license ledger reference

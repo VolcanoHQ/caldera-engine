@@ -45,6 +45,9 @@ GEMINI_RPM = 5
 GEMINI_RPD = 250
 GROQ_RPM = 30
 GROQ_RPD = 14400
+# Paid Gemini tier-1 pricing lane (T2-4): generous RPM, no daily request cap.
+# Verify against the billing dashboard when the first paid key is provisioned.
+GEMINI_PAID_RPM = 150
 
 OLLAMA_MODEL_PREFERENCE_PATTERNS = [
     r"^llama3\.3",
@@ -227,7 +230,7 @@ class LLMClient:
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
         self.quota = _QuotaTracker()
-        self._gemini_client = None
+        self._gemini_clients: Dict[str, Any] = {}
         self._groq_client = None
         # In-memory cooldowns set on hard 429s so subsequent calls in the same run
         # fall straight through to the next provider instead of re-pacing into a
@@ -236,6 +239,17 @@ class LLMClient:
 
         self.gemini_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         self.groq_api_key = os.getenv("GROQ_API_KEY")
+        # T2-4 paid fast lane: present only when a paid-tier key is configured.
+        self.gemini_paid_key = os.getenv("GEMINI_API_KEY_PAID")
+
+    def _call_gemini_paid(self, prompt: str, schema: Optional[Type[BaseModel]], timeout: float, task_name: str) -> Tuple[Optional[dict], Optional[str]]:
+        """The paid lane rides the identical battle-tested Gemini path with its
+        own key, its own cooldown/quota bucket, a paid-tier RPM, and no daily
+        budget gate. Every failure mode falls through to the free chain like
+        any other provider miss."""
+        return self._call_gemini(prompt, schema, timeout, task_name,
+                                 lane="gemini_paid", api_key=self.gemini_paid_key,
+                                 rpm=GEMINI_PAID_RPM, rpd=None)
 
     def query_json(self, prompt: str, schema: Optional[Type[BaseModel]] = None, timeout: float = 60.0, task_name: str = "generic", allowed_providers: Optional[Tuple[str, ...]] = None) -> Tuple[Optional[dict], Optional[str]]:
         """Returns (parsed_json_or_None, provider_label_or_None). Never raises.
@@ -247,12 +261,25 @@ class LLMClient:
         if not self.enabled:
             return None, None
 
-        chain = (
+        chain = [
             ("gemini", self._call_gemini),
             ("groq", self._call_groq),
             ("ollama", self._call_ollama),
-        )
-        active = [(n, f) for n, f in chain if not allowed_providers or n in allowed_providers]
+        ]
+        # T2-4: a "pro"-plan run (declared via usage context by the render
+        # worker) gets the paid Gemini lane FIRST. Without a paid key the pro
+        # plan silently equals free -- the mechanism ships before the first
+        # paid key exists. The paid lane satisfies a ("gemini",) task gate:
+        # it IS Gemini, same quality class.
+        if _USAGE_CONTEXT.get("plan") == "pro" and self.gemini_paid_key:
+            chain.insert(0, ("gemini_paid", self._call_gemini_paid))
+
+        def _gate_ok(name: str) -> bool:
+            if not allowed_providers:
+                return True
+            return name in allowed_providers or (name == "gemini_paid" and "gemini" in allowed_providers)
+
+        active = [(n, f) for n, f in chain if _gate_ok(n)]
         # Single-provider quality-gated tasks (clean-check, alias merge, book
         # analysis) get bounded wait-and-retry: one wait wasn't enough when the
         # provider's RPM window was still hot from preceding calls (measured:
@@ -276,10 +303,16 @@ class LLMClient:
     # ------------------------------------------------------------------
     # Provider: Gemini (Google AI Studio free tier, NOT Vertex)
     # ------------------------------------------------------------------
-    def _call_gemini(self, prompt: str, schema: Optional[Type[BaseModel]], timeout: float, task_name: str) -> Tuple[Optional[dict], Optional[str]]:
-        if not self.gemini_api_key:
+    def _call_gemini(self, prompt: str, schema: Optional[Type[BaseModel]], timeout: float, task_name: str,
+                     lane: str = "gemini", api_key: Optional[str] = None,
+                     rpm: int = GEMINI_RPM, rpd: Optional[int] = GEMINI_RPD) -> Tuple[Optional[dict], Optional[str]]:
+        """Default arguments = the free lane, byte-identical prior behavior.
+        The paid lane (T2-4) calls this same battle-tested path with its own
+        key, its own cooldown/quota bucket, and no daily budget."""
+        api_key = api_key or self.gemini_api_key
+        if not api_key:
             return None, None
-        if self.quota.is_exhausted("gemini", GEMINI_RPD):
+        if rpd is not None and self.quota.is_exhausted(lane, rpd):
             logger.info("Gemini daily quota exhausted; skipping to next provider.")
             return None, None
 
@@ -290,48 +323,49 @@ class LLMClient:
             logger.warning("google-genai package not installed; skipping Gemini.")
             return None, None
 
-        if self._gemini_client is None:
+        if self._gemini_clients.get(lane) is None:
             try:
-                self._gemini_client = genai.Client(api_key=self.gemini_api_key)
+                self._gemini_clients[lane] = genai.Client(api_key=api_key)
             except Exception as e:
                 logger.warning(f"Failed to construct Gemini client: {e}")
                 return None, None
+        client = self._gemini_clients[lane]
 
         for model_name in self.GEMINI_MODELS:
-            self.quota.wait_for_rpm("gemini", GEMINI_RPM)
+            self.quota.wait_for_rpm(lane, rpm)
             start = time.monotonic()
             success = False
             error_str = None
             try:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
-                response = self._gemini_client.models.generate_content(
+                response = client.models.generate_content(
                     model=model_name,
                     contents=prompt,
                     config=config,
                 )
-                self.quota.record_call("gemini")
+                self.quota.record_call(lane)
                 raw_text = response.text or ""
                 parsed = _extract_json_object(raw_text)
                 success = parsed is not None
                 if success:
-                    label = f"gemini:{model_name}"
-                    self._audit("gemini", model_name, task_name, start, True, None)
+                    label = f"{lane}:{model_name}"
+                    self._audit(lane, model_name, task_name, start, True, None)
                     return parsed, label
                 error_str = "JSON parse failure"
             except errors.ClientError as e:
-                self.quota.record_call("gemini")
+                self.quota.record_call(lane)
                 error_str = str(e)
                 if getattr(e, "code", None) == 429:
-                    self._cooldown_until["gemini"] = time.time() + 65.0
+                    self._cooldown_until[lane] = time.time() + 65.0
                     logger.warning(f"Gemini rate limited (429) on {model_name}; cooling down 65s and falling through.")
-                    self._audit("gemini", model_name, task_name, start, False, error_str)
+                    self._audit(lane, model_name, task_name, start, False, error_str)
                     break  # do not try smaller gemini models after a hard rate limit
                 logger.warning(f"Gemini client error on {model_name}: {e}")
             except Exception as e:
                 error_str = str(e)
                 logger.warning(f"Gemini call failed on {model_name}: {e}")
 
-            self._audit("gemini", model_name, task_name, start, success, error_str)
+            self._audit(lane, model_name, task_name, start, success, error_str)
 
         return None, None
 

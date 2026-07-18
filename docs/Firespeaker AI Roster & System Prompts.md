@@ -25,6 +25,11 @@ character voices; Tier 3 = full Graphic-Audio production):
 
 Provider chain for all text AIs: **Groq Llama-3.1-8B (volume) → Gemini Flash (quality reserve)
 → local Ollama (offline fallback)** — except where a task is gated Gemini-only (marked below),
+and except **pro-plan runs (T2-4)**: a project on the paid plan prepends a `gemini_paid` lane
+(own key via `GEMINI_API_KEY_PAID`, paid-tier RPM, no daily budget) that rides the identical
+call path and falls through to the free chain on any failure; without a paid key, pro equals
+free. The paid lane satisfies Gemini-only task gates — it IS Gemini, same quality class.
+Also
 because a wrong answer there is worse than no answer. Rate limiting, daily quota tracking, and
 cooldowns live in `src/llm_client.py`; per-task provider gates are set at each call site.
 
