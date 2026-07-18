@@ -424,6 +424,14 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/console/renders":
                 from src import render_job
                 payload = {"jobs": render_job.list_jobs(q("book") or None)}
+            elif path == "/api/console/projects":
+                from src.project_db import ProjectDB
+                from src import user_db
+                owner = self._owner() if user_db.auth_enabled() else None
+                projects = ProjectDB().list_product_projects(owner=owner)
+                if q("book"):
+                    projects = [p for p in projects if p.get("book_stem") == q("book")]
+                payload = {"projects": projects}
             elif path == "/api/console/audio":
                 wav = console_api.resolve_audio(q("file"))
                 if not wav:
@@ -492,7 +500,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -501,12 +509,60 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/marketplace/"):
                 self.handle_marketplace(path, parsed_url.query, body=body)
+            elif path in ("/api/console/projects", "/api/console/project_update"):
+                from src.project_db import ProjectDB
+                from src import console_api, render_job
+                try:
+                    db = ProjectDB()
+                    if path == "/api/console/projects":
+                        book = console_api._safe_book(body.get("book", ""))
+                        if not book:
+                            self.send_json_error(400, "Unknown book")
+                            return
+                        project = db.create_product_project(
+                            book, render_job.find_source(book) or "",
+                            owner=self._owner(),
+                            tier=int(body.get("tier", 1)), plan=body.get("plan", "free"))
+                    else:
+                        project = db.get_product_project(body.get("project_id", ""))
+                        if not project:
+                            self.send_json_error(404, "No such project")
+                            return
+                        if project["owner"] != self._owner():
+                            self.send_json_error(403, "Not your project")
+                            return
+                        project = db.update_product_project(
+                            body["project_id"],
+                            tier=int(body["tier"]) if body.get("tier") is not None else None,
+                            plan=body.get("plan"))
+                    resp = json.dumps({"project": project}, default=str).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"project endpoint error: {e}")
+                    self.send_json_error(500, f"Project error: {e}")
             elif path == "/api/console/render":
                 from src import render_job
                 try:
+                    # adopt-on-first-render: every render belongs to a project;
+                    # books without one get a project at the requested tier
+                    from src.project_db import ProjectDB
+                    db = ProjectDB()
+                    owner = self._owner()
+                    book = body.get("book", "")
+                    project = db.get_project_for_book(book, owner=owner) or db.get_project_for_book(book)
+                    if not project and render_job.find_source(book):
+                        project = db.create_product_project(
+                            book, render_job.find_source(book) or "",
+                            owner=owner, tier=int(body.get("tier", 1)))
                     job = render_job.start_render(
-                        body.get("book", ""), int(body.get("tier", 1)),
-                        owner=self._owner())
+                        book, int(body.get("tier", 1)),
+                        owner=owner,
+                        project_id=(project or {}).get("id"))
                     code = 200 if job.get("status") != "failed" else 409
                     resp = json.dumps(job, default=str).encode("utf-8")
                     self.send_response(code)

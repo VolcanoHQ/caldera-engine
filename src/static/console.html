@@ -174,6 +174,7 @@ async function selectBook(name, el) {
       ${[1,2,3].map(n => `<button class="ghost" data-tierprev="${n}" style="padding:5px 14px">Tier ${n}</button>`).join("")}
       <span id="prevTierStatus" class="hint"></span></div>
     <audio id="prevTierAudio" controls style="display:none; width:100%; margin-top:8px"></audio></div>
+  <div class="card"><h3>Project</h3><div id="projectCard" class="hint">loading…</div></div>
   <div class="card"><h3>Generate audiobook</h3>
     <div class="row">
       <select id="renderTier" style="width:auto;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px">
@@ -215,6 +216,7 @@ async function selectBook(name, el) {
   document.querySelectorAll("#tree .sceneRow").forEach(el =>
     el.addEventListener("click", () => selectScene(el.dataset.scene, el)));
   wireRenderCard();
+  refreshProjectCard();
   document.querySelectorAll("[data-tierprev]").forEach(btn => btn.addEventListener("click", async () => {
     const tier = +btn.dataset.tierprev;
     const status = $("#prevTierStatus");
@@ -239,6 +241,32 @@ async function selectBook(name, el) {
       const sc = el.nextElementSibling;
       if (sc) sc.style.display = sc.style.display === "none" ? "" : "none";
     }));
+}
+
+/* ---------- project card ---------- */
+async function refreshProjectCard() {
+  const el = $("#projectCard");
+  if (!el || !state.book) return;
+  try {
+    const r = await api(`/api/console/projects?book=${encodeURIComponent(state.book)}`);
+    const p = (r.projects || [])[0];
+    if (p) {
+      el.innerHTML = `<span class="chip" style="color:var(--accent2)">tier ${p.tier}</span>
+        <span class="chip">${esc(p.plan)}</span>
+        <span class="chip">${esc(p.owner === "local" ? "local" : "owned")}</span>
+        <span style="margin-left:8px;color:var(--dim)">${esc(p.id)}</span>`;
+    } else {
+      el.innerHTML = `<button class="ghost" id="adoptBtn" style="padding:4px 12px">Adopt as project</button>
+        <span class="hint">tier &amp; plan lock in at creation; first render adopts automatically</span>`;
+      const b = $("#adoptBtn");
+      if (b) b.addEventListener("click", async () => {
+        await fetch("/api/console/projects", { method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ book: state.book, tier: +($("#renderTier")?.value || 1), plan: "free" }) });
+        refreshProjectCard();
+      });
+    }
+  } catch { el.textContent = "unavailable"; }
 }
 
 /* ---------- render job card ---------- */

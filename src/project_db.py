@@ -59,6 +59,22 @@ class ProjectDB:
             );
             """)
             conn.commit()
+
+            # T2-2 migration: product-project columns on the legacy table
+            # (idempotent -- ALTER TABLE only for columns that don't exist yet).
+            # The legacy `chapters` table and lookahead methods stay untouched.
+            existing = {row[1] for row in cursor.execute("PRAGMA table_info(projects);")}
+            for col, decl in (
+                ("owner", "TEXT DEFAULT 'local'"),
+                ("book_stem", "TEXT"),
+                ("source_file", "TEXT"),
+                ("tier", "INTEGER DEFAULT 1"),
+                ("plan", "TEXT DEFAULT 'free'"),
+            ):
+                if col not in existing:
+                    cursor.execute(f"ALTER TABLE projects ADD COLUMN {col} {decl};")
+                    logger.info(f"ProjectDB migration: added projects.{col}")
+            conn.commit()
             logger.info("Project database initialized successfully.")
 
     def create_project(self, project_id: str, filename: str, status: str) -> bool:
@@ -227,6 +243,77 @@ class ProjectDB:
                 "order_idx": row[7]
             }
 
+    # ------------------------------------------------------------------
+    # T2-2: user-owned product projects (a book + tier + plan + owner).
+    # Distinct from the legacy lookahead orchestration methods above.
+    # ------------------------------------------------------------------
+
+    _PROJECT_FIELDS = ("id", "filename", "status", "created_at", "owner",
+                       "book_stem", "source_file", "tier", "plan")
+
+    def _row_to_project(self, row) -> Dict[str, Any]:
+        return dict(zip(self._PROJECT_FIELDS, row))
+
+    def create_product_project(self, book_stem: str, source_file: str,
+                               owner: str = "local", tier: int = 1,
+                               plan: str = "free") -> Optional[Dict[str, Any]]:
+        """One project per (book, owner). Returns the existing row instead of
+        duplicating -- adopt-on-first-render depends on this being idempotent."""
+        import uuid as _uuid
+        existing = self.get_project_for_book(book_stem, owner=owner)
+        if existing:
+            return existing
+        project_id = "proj_" + _uuid.uuid4().hex[:12]
+        with self._get_conn() as conn:
+            conn.execute(
+                """INSERT INTO projects (id, filename, status, owner, book_stem,
+                   source_file, tier, plan) VALUES (?,?,?,?,?,?,?,?);""",
+                (project_id, os.path.basename(source_file or book_stem), "active",
+                 owner or "local", book_stem, source_file,
+                 int(tier), plan or "free"))
+            conn.commit()
+        logger.info(f"Created project {project_id}: {book_stem} (owner={owner}, tier={tier}, plan={plan})")
+        return self.get_product_project(project_id)
+
+    def get_product_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                f"SELECT {', '.join(self._PROJECT_FIELDS)} FROM projects WHERE id = ?;",
+                (project_id,)).fetchone()
+        return self._row_to_project(row) if row else None
+
+    def get_project_for_book(self, book_stem: str, owner: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        q = f"SELECT {', '.join(self._PROJECT_FIELDS)} FROM projects WHERE book_stem = ?"
+        args: List[Any] = [book_stem]
+        if owner is not None:
+            q += " AND owner = ?"
+            args.append(owner)
+        with self._get_conn() as conn:
+            row = conn.execute(q + " ORDER BY created_at DESC LIMIT 1;", args).fetchone()
+        return self._row_to_project(row) if row else None
+
+    def list_product_projects(self, owner: Optional[str] = None) -> List[Dict[str, Any]]:
+        q = f"SELECT {', '.join(self._PROJECT_FIELDS)} FROM projects WHERE book_stem IS NOT NULL"
+        args: List[Any] = []
+        if owner is not None:
+            q += " AND owner = ?"
+            args.append(owner)
+        with self._get_conn() as conn:
+            rows = conn.execute(q + " ORDER BY created_at DESC;", args).fetchall()
+        return [self._row_to_project(r) for r in rows]
+
+    def update_product_project(self, project_id: str, **fields) -> Optional[Dict[str, Any]]:
+        """Only tier/plan/status are mutable -- ownership transfers are a
+        deliberate future feature, not an UPDATE away."""
+        allowed = {k: v for k, v in fields.items() if k in ("tier", "plan", "status") and v is not None}
+        if allowed:
+            sets = ", ".join(f"{k} = ?" for k in allowed)
+            with self._get_conn() as conn:
+                conn.execute(f"UPDATE projects SET {sets} WHERE id = ?;",
+                             (*allowed.values(), project_id))
+                conn.commit()
+        return self.get_product_project(project_id)
+
     def get_project_lookahead_status(self, project_id: str) -> Dict[str, Any]:
         """Compiles the processing state for all chapters in a project."""
         with self._get_conn() as conn:
@@ -258,3 +345,37 @@ class ProjectDB:
                 "project_status": proj_row[0],
                 "chapters": chapters
             }
+
+
+def main():
+    """CLI: backfill product-project rows for already-ingested books."""
+    import argparse
+    from src.render_job import find_source
+
+    parser = argparse.ArgumentParser(description="Firespeaker project database")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("backfill", help="Create project rows for every data/corpus/pipeline book")
+    s.add_argument("--owner", default="local", help="user_id or 'local'")
+    sub.add_parser("list")
+    args = parser.parse_args()
+
+    db = ProjectDB()
+    if args.cmd == "backfill":
+        created = skipped = 0
+        pipeline_root = "data/corpus/pipeline"
+        for book in sorted(os.listdir(pipeline_root)) if os.path.isdir(pipeline_root) else []:
+            if not os.path.isdir(os.path.join(pipeline_root, book, "tier1")):
+                continue
+            if db.get_project_for_book(book):
+                skipped += 1
+                continue
+            db.create_product_project(book, find_source(book) or "", owner=args.owner)
+            created += 1
+        print(f"backfill: {created} project(s) created, {skipped} already existed")
+    elif args.cmd == "list":
+        for p in db.list_product_projects():
+            print(json.dumps(p, default=str))
+
+
+if __name__ == "__main__":
+    main()

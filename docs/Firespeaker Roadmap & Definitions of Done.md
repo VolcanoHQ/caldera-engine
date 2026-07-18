@@ -221,9 +221,23 @@ redeem → cookie → me → API 200 → logout → 401.
 *Note: still a launch gate for any non-local marketplace exposure; the server
 remains local-only until auth is hardened (HTTPS, rate limits) — tracked in T2-5.*
 
-### T2-2 · User-owned projects — ⬜ OPEN
-**DoD:** `project_db` project records own books/renders/exports; console scopes to the
-signed-in user's projects; tier + plan chosen at project creation.
+### T2-2 · User-owned projects — ✅ DONE
+**DoD:**
+- [x] `ProjectDB` extended in place (idempotent ALTER TABLE migration: owner,
+      book_stem, source_file, tier, plan) — legacy chapters table untouched;
+      product CRUD is idempotent per (book, owner).
+- [x] Routes: list (scoped to session user when auth on — verified: signed-in user
+      saw 0 of the 22 local-owned projects, then 1 after creating their own),
+      create (book-validated, 400 on traversal), update (tier/plan only; cross-owner
+      update refused 403).
+- [x] Tier + plan chosen at creation; render jobs stamped with `project_id`
+      (verified live: job carried `proj_a436fd241954` + session owner);
+      adopt-on-first-render creates a project when none exists.
+- [x] `python -m src.project_db backfill` created projects for all 20 remaining
+      pipeline books (2 already existed); console shows a Project card with
+      tier/plan chips and an Adopt button.
+**Evidence:** curl-tested in both auth modes; dead-worker reaper extended to
+queued jobs killed before their running state (found during testing).
 
 ### T2-3 · Usage metering per user/project — ⬜ OPEN
 **DoD:** Every LLM call and generation job carries owner + project in the audit log;

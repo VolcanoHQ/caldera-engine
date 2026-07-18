@@ -86,8 +86,9 @@ def list_jobs(book: Optional[str] = None) -> List[Dict[str, Any]]:
                     j = json.load(f)
             except Exception:
                 continue
-            # a "running" job whose worker died is failed, not stuck forever
-            if j.get("status") == "running" and not _pid_alive(j.get("pid")):
+            # a queued/running job whose worker died is failed, not stuck forever
+            # (queued covers a worker killed before it wrote its running state)
+            if j.get("status") in ("queued", "running") and j.get("pid") and not _pid_alive(j.get("pid")):
                 j["status"] = "failed"
                 j["error"] = j.get("error") or "Worker process died unexpectedly."
                 _write_job(j)
@@ -96,7 +97,8 @@ def list_jobs(book: Optional[str] = None) -> List[Dict[str, Any]]:
     return jobs
 
 
-def start_render(book: str, tier: int, owner: str = "local") -> Dict[str, Any]:
+def start_render(book: str, tier: int, owner: str = "local",
+                 project_id: Optional[str] = None) -> Dict[str, Any]:
     """Create the job record and spawn the detached worker. Returns the record
     (status 'failed' immediately for input problems -- no zombie jobs)."""
     if tier not in (1, 2, 3):
@@ -117,6 +119,7 @@ def start_render(book: str, tier: int, owner: str = "local") -> Dict[str, Any]:
     job = {
         "job_id": uuid.uuid4().hex[:12],
         "book": book, "source_file": source, "tier": tier, "owner": owner or "local",
+        "project_id": project_id,
         "status": "queued", "created_at": time.time(),
         "started_at": None, "finished_at": None, "pid": None,
         "output_wav": None, "output_m4b": None, "timings": None, "error": None,
