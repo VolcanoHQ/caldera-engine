@@ -93,6 +93,22 @@ def list_books() -> List[Dict[str, Any]]:
             },
         }
         books.append(entry)
+
+    # New sources: manuscripts on disk that were never ingested. They carry no
+    # artifacts yet -- the first render ingests them -- but the console must
+    # show them or "drop a file in" is an invisible act.
+    ingested = {b["book"] for b in books}
+    from src.render_job import CORPUS_ROOTS, SOURCE_EXTS
+    import glob as _glob
+    for root in CORPUS_ROOTS:
+        for ext in SOURCE_EXTS:
+            for path in sorted(_glob.glob(os.path.join(root, f"*{ext}"))):
+                stem = os.path.splitext(os.path.basename(path))[0]
+                if stem in ingested:
+                    continue
+                ingested.add(stem)
+                books.append({"book": stem, "scenes": 0, "new": True,
+                              "source_file": path, "artifacts": {}})
     return books
 
 

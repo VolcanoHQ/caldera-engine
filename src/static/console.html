@@ -188,7 +188,10 @@ function covBadge(s) {
 async function loadBooks() {
   const books = await api("/api/console/books");
   $("#bookList").innerHTML = books.length ? books.map(b => {
-    const a = b.artifacts;
+    const a = b.artifacts || {};
+    if (b.new) return `<div class="bookCard" data-book="${esc(b.book)}" data-new="1">
+      <div class="name">${esc(b.book)} <span class="badge" style="color:var(--ok);border-color:var(--ok)">new</span></div>
+      <div class="meta">not ingested yet — first render ingests it</div></div>`;
     return `<div class="bookCard" data-book="${esc(b.book)}">
       <div class="name">${esc(b.book)}</div>
       <div class="meta">${b.scenes} scenes</div>
@@ -198,19 +201,36 @@ async function loadBooks() {
         <span class="dot ${a.sound_design ? "on" : ""}"></span>Sound
         <span class="dot ${a.dramatization ? "on" : ""}"></span>Drama
       </div></div>`;
-  }).join("") : '<div class="empty">no ingested books</div>';
+  }).join("") : '<div class="empty">no books — drop a .txt or .epub into data/corpus/</div>';
   document.querySelectorAll(".bookCard").forEach(el =>
-    el.addEventListener("click", () => selectBook(el.dataset.book, el)));
+    el.addEventListener("click", () => selectBook(el.dataset.book, el, !!el.dataset.new)));
 }
 
 /* ---------- tree pane ---------- */
-async function selectBook(name, el) {
+async function selectBook(name, el, isNew = false) {
   document.querySelectorAll(".bookCard").forEach(e => e.classList.remove("active"));
   if (el) el.classList.add("active");
   state.book = name; state.scene = null;
   $("#treeTitle").textContent = name;
   $("#tree").innerHTML = '<div class="empty">loading…</div>';
   $("#sceneView").innerHTML = '<div class="empty">select a scene</div>';
+  if (isNew) {
+    // no artifacts yet -- show the action cards; the first render ingests
+    $("#tree").innerHTML = `<div class="card"><h3>New source</h3>
+      <p class="hint">This manuscript hasn't been ingested. Generate below — the render
+      job runs the full ingestion (scrubbing, parts → chapters → scenes → lines) first,
+      then synthesizes. The structure tree appears here afterwards.</p></div>
+      <div class="card"><h3>Generate audiobook</h3>
+        <div class="row">
+          <select id="renderTier" style="width:auto;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px">
+            <option value="1">Tier 1 — single narrator</option>
+            <option value="2">Tier 2 — full cast</option></select>
+          <button id="renderBtn">Generate</button>
+          <span id="renderStatus" class="hint"></span></div>
+        <div id="renderResult" style="margin-top:8px"></div></div>`;
+    wireRenderCard();
+    return;
+  }
   const t = await api(`/api/console/book?name=${encodeURIComponent(name)}`);
   let html = `<div class="card"><h3>Tier preview — trailer scene</h3>
     <div class="row">
