@@ -552,8 +552,9 @@ function renderMixer() {
   // music lane
   html += `<div class="laneRow2">${laneBar("music", "Music")}<div class="laneTrack" style="width:${W}px">`;
   if (d.music.base_mood) {
-    html += `<div class="blk music" data-play="${esc(d.music.bed_wav || "")}" style="left:0;width:${W - 4}px"
-      title="bed: ${esc(d.music.style || d.music.base_mood)}">${esc(d.music.base_mood)} bed${d.music.state_events.length ? " · " + d.music.state_events.map(e => e.action + "@" + Math.round(e.start_s) + "s").join(", ") : ""}</div>`;
+    const mo = laneOv("music");
+    html += `<div class="blk music ${mo.mute ? "muted" : ""}" data-laneedit="music" data-play="${esc(d.music.bed_wav || "")}" style="left:0;width:${W - 4}px"
+      title="bed: ${esc(mo.prompt || d.music.style || d.music.base_mood)} — click to edit/regenerate">${esc(mo.prompt ? "✏ " + mo.prompt.slice(0, 60) : d.music.base_mood + " bed")}${mo.variant ? ` <span class="g">take ${mo.variant}</span>` : ""}${d.music.state_events.length ? " · " + d.music.state_events.map(e => e.action + "@" + Math.round(e.start_s) + "s").join(", ") : ""}</div>`;
   }
   for (const s of d.music.stingers) {
     const o = ovFor(s.key);
@@ -563,9 +564,10 @@ function renderMixer() {
   html += `</div></div>`;
   // ambience lane
   html += `<div class="laneRow2">${laneBar("ambience", "Ambience")}<div class="laneTrack" style="width:${W}px">`;
-  if (d.ambience.components.length)
-    html += `<div class="blk amb" data-play="${esc(d.ambience.wav || "")}" style="left:0;width:${W - 4}px"
-      title="${esc(d.ambience.components.join(" · "))}">${esc(d.ambience.components.join(" · ").slice(0, 90))}</div>`;
+  const ao = laneOv("ambience");
+  if (d.ambience.components.length || ao.prompt)
+    html += `<div class="blk amb ${ao.mute ? "muted" : ""}" data-laneedit="ambience" data-play="${esc(d.ambience.wav || "")}" style="left:0;width:${W - 4}px"
+      title="click to edit/regenerate">${esc(ao.prompt ? "✏ " + ao.prompt.slice(0, 70) : d.ambience.components.join(" · ").slice(0, 90))}${ao.variant ? ` <span class="g">take ${ao.variant}</span>` : ""}</div>`;
   html += `</div></div>`;
   // sfx lane
   html += `<div class="laneRow2">${laneBar("sfx", "SFX")}<div class="laneTrack" style="width:${W}px">`;
@@ -583,7 +585,8 @@ function renderMixer() {
 
   document.querySelectorAll("#mixLanes .blk").forEach(el => el.addEventListener("click", e => {
     e.stopPropagation();
-    if (el.dataset.evkey) showEvEditor(el, el.dataset.evkey);
+    if (el.dataset.evkey) showEvEditor(el, el.dataset.evkey, "event");
+    else if (el.dataset.laneedit) showEvEditor(el, el.dataset.laneedit, "lane");
     else if (el.dataset.play) playFile(el.dataset.play);
   }));
   document.querySelectorAll("[data-lanemute]").forEach(el => el.addEventListener("click", async e => {
@@ -601,33 +604,49 @@ async function postOverride(target, key, fields) {
   renderMixer();
 }
 
-function showEvEditor(anchorEl, key) {
+function showEvEditor(anchorEl, key, target = "event") {
   document.getElementById("evEditor")?.remove();
-  const o = ovFor(key);
+  const o = target === "lane" ? laneOv(key) : ovFor(key);
+  const isLane = target === "lane";
   const ed = document.createElement("div");
   ed.id = "evEditor";
   const r = anchorEl.getBoundingClientRect();
   ed.style.left = Math.min(r.left, window.innerWidth - 300) + "px";
-  ed.style.top = (r.top - 190) + "px";
+  ed.style.top = Math.max(8, r.top - 265) + "px";
   ed.innerHTML = `
-    <b>${esc(key)}</b>
+    <b>${esc(key)}</b>${o.variant ? ` <span class="hint">take ${o.variant}</span>` : ""}
+    <label>Rewrite sound prompt (blank = crew's design)</label>
+    <textarea id="edPrompt" style="width:100%;min-height:38px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:5px;font:inherit;font-size:11.5px;padding:5px">${esc(o.prompt || "")}</textarea>
     <label>Gain: <span id="edGainV">${o.gain_db || 0}</span> dB</label>
     <input type="range" id="edGain" min="-24" max="24" step="1" value="${o.gain_db || 0}">
-    <label>Nudge: <span id="edNudgeV">${o.nudge_s || 0}</span> s</label>
-    <input type="range" id="edNudge" min="-5" max="5" step="0.1" value="${o.nudge_s || 0}">
+    ${isLane ? "" : `<label>Nudge: <span id="edNudgeV">${o.nudge_s || 0}</span> s</label>
+    <input type="range" id="edNudge" min="-5" max="5" step="0.1" value="${o.nudge_s || 0}">`}
     <div class="row" style="margin-top:8px; gap:6px">
       <button class="ghost" id="edMute" style="padding:3px 10px">${o.mute ? "Unmute" : "Mute"}</button>
-      ${anchorEl.dataset.play ? `<button class="ghost" id="edPlay" style="padding:3px 10px">▶ Audition</button>` : ""}
+      ${anchorEl.dataset.play ? `<button class="ghost" id="edPlay" style="padding:3px 10px">▶</button>` : ""}
+      <button class="ghost" id="edRegen" style="padding:3px 10px" title="roll a new generation of this sound (previous takes stay cached)">🎲 New take</button>
       <button id="edSave" style="padding:3px 12px">Save</button>
-    </div>`;
+    </div>
+    <div class="hint" style="margin-top:6px">prompt/take changes apply on Re-mix (regenerates just this asset)</div>`;
   document.body.appendChild(ed);
+  const fields = () => ({
+    gain_db: +$("#edGain").value,
+    mute: !!o.mute,
+    prompt: $("#edPrompt").value.trim() || null,
+    ...(isLane ? {} : { nudge_s: +$("#edNudge").value }),
+  });
   $("#edGain").addEventListener("input", () => $("#edGainV").textContent = $("#edGain").value);
-  $("#edNudge").addEventListener("input", () => $("#edNudgeV").textContent = $("#edNudge").value);
+  if ($("#edNudge")) $("#edNudge").addEventListener("input", () => $("#edNudgeV").textContent = $("#edNudge").value);
   if ($("#edPlay")) $("#edPlay").addEventListener("click", () => playFile(anchorEl.dataset.play));
-  $("#edMute").addEventListener("click", async () => { ed.remove(); await postOverride("event", key, { mute: !o.mute }); });
+  $("#edMute").addEventListener("click", async () => { ed.remove(); await postOverride(target, key, { mute: !o.mute }); });
+  $("#edRegen").addEventListener("click", async () => {
+    ed.remove();
+    await postOverride(target, key, { ...fields(), variant: (o.variant || 0) + 1 });
+    $("#mixStatus").textContent = `take ${(o.variant || 0) + 1} queued — hit Re-mix to generate`;
+  });
   $("#edSave").addEventListener("click", async () => {
     ed.remove();
-    await postOverride("event", key, { gain_db: +$("#edGain").value, nudge_s: +$("#edNudge").value, mute: !!o.mute });
+    await postOverride(target, key, { ...fields(), variant: o.variant || null });
   });
   setTimeout(() => document.addEventListener("click", function h(ev) {
     if (!ed.contains(ev.target)) { ed.remove(); document.removeEventListener("click", h); }

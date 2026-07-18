@@ -245,6 +245,14 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
         ts = max(0.0, base_ts + float(ov.get("nudge_s", 0.0)))
         return ts, 10 ** (gain_db / 20.0)
 
+    def _take(text: str, ov: Dict[str, Any]) -> str:
+        """Author regeneration: a prompt override replaces the crew's text; a
+        variant number is a nonce appended to the generation prompt, rolling a
+        NEW cached generation while every earlier take stays retrievable."""
+        out = ov.get("prompt") or text
+        v = int(ov.get("variant", 0) or 0)
+        return f"{out}, take {v}" if v else out
+
     # 1. Voice track: concat lines with their post-padding as silence
     concat_parts = []
     offsets: List[float] = []  # start time of each line
@@ -277,7 +285,7 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
             if params is None:
                 continue
             sting_path = os.path.join(scene_dir, f"stinger_{i}.wav")
-            if generate_stinger(s.get("description", "dramatic musical accent"), sting_path) is None:
+            if generate_stinger(_take(s.get("description", "dramatic musical accent"), ov_events.get(f"stinger:{i}", {})), sting_path) is None:
                 sting_path = make_placeholder_stinger(sting_path)
             events.append((*params[:1], sting_path, params[1]))
     if sound_design and sound_design.get("events"):
@@ -294,7 +302,16 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
             if params is None:
                 continue
             anchor, ev_gain = params
-            layers = ev["layers"]
+            ev_ov = ov_events.get(f"event:{i}", {})
+            if ev_ov.get("prompt"):
+                # author's text wins over the crew's decomposition: one clean layer
+                layers = [{"component": _take(ev_ov["prompt"], {"variant": ev_ov.get("variant")}),
+                           "timing": "start", "level": "prominent"}]
+            elif ev_ov.get("variant"):
+                layers = [{**l, "component": _take(l["component"], {"variant": ev_ov.get("variant")})}
+                          for l in ev["layers"]]
+            else:
+                layers = ev["layers"]
             if ev.get("category") == "creature" and ev.get("emotional_intent"):
                 layers = [
                     {**l, "component": f"{l['component']}, {ev['emotional_intent']} tone"}
@@ -334,7 +351,9 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
     # Music state machine: 'stop'/'resume'/'change' events segment the bed timeline
     # (the gold's "Music stops abruptly. Dead silence." / "resumes instantly").
     music = direction.get("music", {})
-    base_style = music.get("style", "soft ambient underscore")
+    music_lane_ov = ov_lanes.get("music", {})
+    base_style = _take(music_lane_ov.get("prompt") or music.get("style", "soft ambient underscore"),
+                       {"variant": music_lane_ov.get("variant")})
     base_mood = music.get("base_mood", "neutral")
 
     def _bed_prompt(style: str) -> str:
@@ -385,9 +404,11 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
     # Scene-specific generated ambience (from the sound design's continuous layers)
     # beats the generic room-tone loop when available.
     ambience = None
-    if sound_design and sound_design.get("continuous_ambience"):
+    amb_lane_ov = ov_lanes.get("ambience", {})
+    if (sound_design and sound_design.get("continuous_ambience")) or amb_lane_ov.get("prompt"):
         from src.audio_generation import generate_sfx
-        amb_prompt = ", ".join(sound_design["continuous_ambience"]) + ", soft continuous background ambience, gentle field recording, smooth"
+        amb_base = amb_lane_ov.get("prompt") or ", ".join((sound_design or {}).get("continuous_ambience", []))
+        amb_prompt = _take(amb_base, {"variant": amb_lane_ov.get("variant")}) + ", soft continuous background ambience, gentle field recording, smooth"
         amb_clip = generate_sfx(amb_prompt, 8.0, os.path.join(scene_dir, "ambience_clip.wav"), steps=50)
         if amb_clip:
             # Tame diffusion harshness (lowpass) and de-click the loop point

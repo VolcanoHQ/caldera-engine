@@ -589,7 +589,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         body.get("book", ""), body.get("scene_id", ""),
                         body.get("target", ""), body.get("key", ""),
                         mute=body.get("mute"), gain_db=body.get("gain_db"),
-                        nudge_s=body.get("nudge_s"))
+                        nudge_s=body.get("nudge_s"), prompt=body.get("prompt"),
+                        variant=body.get("variant"))
                     if result is None:
                         self.send_json_error(400, "Invalid override target/key")
                         return

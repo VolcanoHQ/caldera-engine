@@ -298,6 +298,13 @@ hours, not overnight; queue survives restarts.
       any asset, per-event editor (mute/gain/nudge), lane mute buttons, and a
       Re-mix button (force preview re-render honoring overrides — assets cached,
       so re-mix is assembly-only).
+- [x] **Per-asset regeneration**: any event, the music bed, or the ambience can be
+      rewritten (author's prompt replaces the crew's design) or re-rolled ("🎲 New
+      take" — a take-number nonce under a new cache key, so every take stays
+      cached and reverting is free). Proved live: a rewritten footsteps prompt
+      generated a fresh AudioLDM asset and the re-mix took **19s** (only the one
+      changed asset regenerated); take 1 produced a second distinct cached asset;
+      clearing restored the crew's original, cache-only.
 **Evidence:** anchoring stays line-based, so mix decisions survive re-synthesis;
 Action Foley Spotter (`b7efa6b`) feeds the SFX lane this mixer exposes.
 

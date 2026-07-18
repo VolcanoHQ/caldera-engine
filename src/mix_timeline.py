@@ -44,9 +44,15 @@ def load_mix_overrides(book: str) -> Dict[str, Any]:
 
 def save_mix_override(book: str, scene_id: str, target: str, key: str = "",
                       mute: Optional[bool] = None, gain_db: Optional[float] = None,
-                      nudge_s: Optional[float] = None) -> Optional[Dict[str, Any]]:
+                      nudge_s: Optional[float] = None, prompt: Optional[str] = None,
+                      variant: Optional[int] = None) -> Optional[Dict[str, Any]]:
     """target: 'event' (key = event:<i> or stinger:<i>) or 'lane'
-    (key = voice|music|ambience|sfx). Passing all-None fields clears the entry."""
+    (key = voice|music|ambience|sfx). Passing all-None fields clears the entry.
+
+    prompt: author's replacement text for the generated asset (an event's sound,
+    the music bed's style, the ambience). variant: 'take number' — appended to
+    the generation prompt as a nonce, so bumping it rolls a NEW generation under
+    a new cache key while every previous take stays cached (reverting is free)."""
     book = _safe_book(book)
     if not book or target not in ("event", "lane"):
         return None
@@ -64,6 +70,10 @@ def save_mix_override(book: str, scene_id: str, target: str, key: str = "",
         entry["gain_db"] = max(-24.0, min(24.0, float(gain_db)))
     if nudge_s is not None and target == "event":
         entry["nudge_s"] = max(-5.0, min(5.0, float(nudge_s)))
+    if prompt is not None and str(prompt).strip():
+        entry["prompt"] = str(prompt).strip()[:200]
+    if variant is not None and int(variant) > 0:
+        entry["variant"] = max(0, min(99, int(variant)))
     if entry:
         bucket[key] = entry
     else:
