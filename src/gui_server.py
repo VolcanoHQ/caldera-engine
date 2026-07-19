@@ -9,6 +9,7 @@ A zero-dependency standard Python HTTP API server hosting the workspace.
 import os
 import sys
 import json
+import time
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +58,84 @@ deque_handler.setFormatter(formatter)
 root_logger.addHandler(deque_handler)
 
 logger = logging.getLogger("StudioServer")
+
+TIER1_GUI_PIPELINE = "tier1_manifest_v1"
+
+
+def _manifest_to_gui_hierarchy(manifest):
+    """Adapt the Tier 1 manifest to the hierarchy schema used by the review GUI."""
+    parts = []
+    all_characters = set()
+
+    for part_index, part in enumerate(manifest.parts, 1):
+        chapters = []
+        for chapter_index, chapter in enumerate(part.chapters, 1):
+            scenes = []
+            for scene_index, scene in enumerate(chapter.scenes, 1):
+                lines = []
+                for line in scene.lines:
+                    line_data = line.model_dump()
+                    line_data["dialogue"] = line_data["text"]
+                    line_data["scene_id"] = scene.scene_id
+                    lines.append(line_data)
+                    if line.character != "Narrator":
+                        all_characters.add(line.character)
+
+                dialogue_lines = [line for line in lines if line["segment_type"] == "dialogue"]
+                narration_words = sum(
+                    len(line["text"].split()) for line in lines if line["segment_type"] == "narrative"
+                )
+                dialogue_words = sum(len(line["text"].split()) for line in dialogue_lines)
+                scenes.append({
+                    "scene_id": scene.scene_id,
+                    "scene_number": scene_index,
+                    "raw_scene_text": "\n\n".join(line["text"] for line in lines),
+                    "characters_present": sorted({line["character"] for line in dialogue_lines if line["character"] != "Narrator"}),
+                    "total_dialogue_lines": len(dialogue_lines),
+                    "metrics": {
+                        "total_words": narration_words + dialogue_words,
+                        "narration_words": narration_words,
+                        "dialogue_words": dialogue_words,
+                    },
+                    "lines": lines,
+                })
+            chapters.append({
+                "chapter_id": chapter.chapter_id,
+                "chapter_number": chapter_index,
+                "chapter_title": chapter.title,
+                "total_scenes": len(scenes),
+                "scenes": scenes,
+            })
+        parts.append({
+            "part_id": part.part_id,
+            "part_title": part.title,
+            "total_chapters": len(chapters),
+            "chapters": chapters,
+        })
+
+    return {
+        "metadata": {
+            "source_file": manifest.source_file,
+            "quote_style_detected": "double",
+            "total_parts": len(parts),
+            "total_chapters": manifest.total_chapters,
+            "total_scenes": sum(len(chapter["scenes"]) for part in parts for chapter in part["chapters"]),
+            "global_characters": ["Narrator", *sorted(all_characters)],
+            "merge_decisions": [],
+            "analysis_pipeline": TIER1_GUI_PIPELINE,
+        },
+        "parts": parts,
+    }
+
+
+def build_gui_hierarchy(filepath: str, tier: int):
+    """Build hierarchy data using the canonical parser for the selected tier."""
+    if int(tier) == 1:
+        from src.tier_1_parser import ingest_manuscript_tier_1
+        return _manifest_to_gui_hierarchy(ingest_manuscript_tier_1(filepath))
+
+    parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
+    return parser.parse_hierarchy(filepath)
 
 
 # Global non-blocking pipeline compilation state
@@ -440,6 +519,16 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/console/mix_timeline":
                 from src import mix_timeline
                 payload = mix_timeline.scene_timeline(q("book"), q("scene"))
+            elif path == "/api/console/health":
+                from src import boot_check
+                import json as _json
+                try:
+                    with open(boot_check.REPORT_PATH, encoding="utf-8") as f:
+                        payload = _json.load(f)
+                    if time.time() - payload.get("at", 0) > 300:
+                        payload = boot_check.run_boot_checks(fast=True)
+                except Exception:
+                    payload = boot_check.run_boot_checks(fast=True)
             elif path == "/api/console/audio":
                 wav = console_api.resolve_audio(q("file"))
                 if not wav:
@@ -508,7 +597,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -582,6 +671,25 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"render start error: {e}")
                     self.send_json_error(500, f"Render error: {e}")
+            elif path == "/api/console/omit_scene":
+                from src import console_api as _ca
+                try:
+                    result = _ca.save_scene_override(
+                        body.get("book", ""), body.get("scene_id", ""),
+                        omit=bool(body.get("omit")))
+                    if result is None:
+                        self.send_json_error(400, "Invalid book or scene_id")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"omit_scene error: {e}")
+                    self.send_json_error(500, f"Omit error: {e}")
             elif path == "/api/console/mix_override":
                 from src import mix_timeline
                 try:
@@ -862,24 +970,33 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             hierarchy_cache = os.path.join(cache_dir, "hierarchy.json")
             profile_cache = os.path.join(cache_dir, "profile.json")
             
-            # Check cached files
+            # Tier 1 caches created by the legacy hierarchy parser include raw
+            # Gutenberg front matter. Regenerate those once through the canonical
+            # manifest pipeline; current-format caches retain reviewer edits.
+            cache_is_current = False
             if os.path.exists(hierarchy_cache) and os.path.exists(profile_cache):
-                logger.info(f"Retrieving cached profiling metrics for: {filename} (Tier {tier})")
                 with open(hierarchy_cache, "r", encoding="utf-8") as f:
-                    hierarchy_data = json.load(f)
+                    cached_hierarchy = json.load(f)
+                cache_is_current = int(tier) != 1 or (
+                    cached_hierarchy.get("metadata", {}).get("analysis_pipeline") == TIER1_GUI_PIPELINE
+                )
+
+            if cache_is_current:
+                logger.info(f"Retrieving cached profiling metrics for: {filename} (Tier {tier})")
+                hierarchy_data = cached_hierarchy
                 with open(profile_cache, "r", encoding="utf-8") as f:
                     profile_data = json.load(f)
             else:
                 logger.info(f"Analyzing and profiling {filename} from scratch (Tier {tier})...")
-                parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
                 profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
                 
-                hierarchy_data = parser.parse_hierarchy(filepath)
+                hierarchy_data = build_gui_hierarchy(filepath, int(tier))
                 profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
                 
                 # Cache results
                 os.makedirs(cache_dir, exist_ok=True)
-                parser.save_index(hierarchy_data, hierarchy_cache)
+                with open(hierarchy_cache, "w", encoding="utf-8") as f:
+                    json.dump(hierarchy_data, f, indent=4)
                 profiler.save_profile(profile_data, profile_cache)
                 
             response_data = {
@@ -956,10 +1073,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             logger.info(f"Custom book saved successfully to: {filepath}")
             
             # Analyze immediately
-            parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
             profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
             
-            hierarchy_data = parser.parse_hierarchy(filepath)
+            hierarchy_data = build_gui_hierarchy(filepath, int(tier))
             profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
             
             # Save cache
@@ -971,7 +1087,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             hierarchy_cache = os.path.join(cache_dir, "hierarchy.json")
             profile_cache = os.path.join(cache_dir, "profile.json")
             os.makedirs(cache_dir, exist_ok=True)
-            parser.save_index(hierarchy_data, hierarchy_cache)
+            with open(hierarchy_cache, "w", encoding="utf-8") as f:
+                json.dump(hierarchy_data, f, indent=4)
             profiler.save_profile(profile_data, profile_cache)
             
             response_data = {
@@ -1034,8 +1151,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 with open(hierarchy_cache, "r", encoding="utf-8") as f:
                     hierarchy_data = json.load(f)
             else:
-                parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
-                hierarchy_data = parser.parse_hierarchy(filepath)
+                hierarchy_data = build_gui_hierarchy(filepath, int(tier))
                 
             # If confirmed, merge original_name into canonical_name in the hierarchy cache
             if is_confirmed:
@@ -1195,8 +1311,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 with open(hierarchy_cache, "r", encoding="utf-8") as f:
                     hierarchy_data = json.load(f)
             else:
-                parser = HierarchicalParser(use_gpu=False, production_tier=int(tier))
-                hierarchy_data = parser.parse_hierarchy(filepath)
+                hierarchy_data = build_gui_hierarchy(filepath, int(tier))
                 
             # If name changes, apply rename override in the hierarchy cache
             if new_name != original_name:
@@ -2050,6 +2165,13 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 def main():
     port = 8082
     server_address = ('', port)
+    # Boot sequence: self-heal a wedged GPU driver (re-execs if needed), then
+    # run the environment doctor so a broken runtime is visible at startup,
+    # not an hour into the first render.
+    from src import boot_check
+    boot_check.ensure_torch_safe()
+    boot_check.print_report(boot_check.run_boot_checks())
+
     # Threading: a slow request (XTTS clone preview takes tens of seconds on CPU)
     # must not block the progress polls and page loads of every other client.
     httpd = ThreadingHTTPServer(server_address, StudioRequestHandler)

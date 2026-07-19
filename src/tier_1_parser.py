@@ -1560,6 +1560,20 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
             logger.warning(f"Resume: previous lines for {scene_id} failed validation ({e}); re-enriching.")
             return None
 
+    # Scene omits (console structure control): a human can exclude any scene
+    # from the audiobook. Artifacts stay complete -- the omit applies only to
+    # the manifest (and skips enrichment spend on the omitted scene).
+    scene_omits: Dict[str, Any] = {}
+    omit_path = os.path.join(pipeline_dir, "scene_overrides.json")
+    if os.path.exists(omit_path):
+        try:
+            with open(omit_path, encoding="utf-8") as f:
+                scene_omits = {k: v for k, v in json.load(f).items() if v.get("omit")}
+            if scene_omits:
+                logger.info(f"Scene overrides: {len(scene_omits)} scene(s) omitted from the manifest.")
+        except Exception as e:
+            logger.warning(f"Scene overrides unreadable ({e}); proceeding without.")
+
     for p_idx, part in enumerate(parts):
         part_id = part["part_id"]
         part_title = part["title"]
@@ -1631,6 +1645,14 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
                     "lines": [line.model_dump() for line in lines]
                 })
 
+                if scene_id in scene_omits:
+                    print(f"     [Omit] Scene {scene_id} excluded from manifest by console override.")
+                    if enable_llm_enrichment:
+                        # keep the enriched artifact complete (un-enriched lines)
+                        all_loop4_lines_enriched.append({
+                            "scene_id": scene_id,
+                            "lines": [line.model_dump() for line in lines]})
+                    continue
                 if enable_llm_enrichment:
                     reused = _reusable_scene(scene_id, lines) if resume_enrichment else None
                     if reused is not None:

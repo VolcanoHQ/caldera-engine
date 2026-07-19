@@ -143,6 +143,7 @@ def book_tree(book: str) -> Optional[Dict[str, Any]]:
             "speakers": speakers,
         }
 
+    scene_overrides = load_scene_overrides(book)
     scene_nodes: Dict[str, List[Dict[str, Any]]] = {}
     for sc in scenes:
         sid = sc.get("scene_id", "")
@@ -150,6 +151,7 @@ def book_tree(book: str) -> Optional[Dict[str, Any]]:
         text = sc.get("text_block", "")
         node = {
             "scene_id": sid,
+            "omitted": bool(scene_overrides.get(sid, {}).get("omit")),
             "boundary_source": sc.get("boundary_source", "regex"),
             "chars": len(text),
             "excerpt": " ".join(text[:140].split()),
@@ -234,6 +236,7 @@ def scene_detail(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
     return {
         "book": book,
         "scene_id": scene_id,
+        "omitted": bool(load_scene_overrides(book).get(scene_id, {}).get("omit")),
         "scene_text": scene_text,
         "allowed_speakers": book_speakers(book),
         "lines": lines,
@@ -289,6 +292,32 @@ def apply_speaker_overrides(lines: List[Dict[str, Any]], overrides: Dict[str, Di
             l["speaker_locked"] = True
             applied += 1
     return applied
+
+
+def load_scene_overrides(book: str) -> Dict[str, Dict[str, Any]]:
+    """Structure-level human decisions, keyed by scene_id. Today: {"omit": true}
+    keeps a scene out of every manifest/render while artifacts stay complete."""
+    book = _safe_book(book)
+    if not book:
+        return {}
+    return _load_json(os.path.join(_tier1_dir(book), "scene_overrides.json")) or {}
+
+
+def save_scene_override(book: str, scene_id: str, omit: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book or not re.fullmatch(r"[A-Za-z0-9_]+", scene_id or ""):
+        return None
+    overrides = load_scene_overrides(book)
+    if omit:
+        overrides[scene_id] = {"omit": True, "at": __import__("time").time()}
+    else:
+        overrides.pop(scene_id, None)
+    path = os.path.join(_tier1_dir(book), "scene_overrides.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(tmp, path)
+    return {"scene_id": scene_id, "omit": bool(omit), "total_omitted": len(overrides)}
 
 
 def book_speakers(book: str) -> List[str]:

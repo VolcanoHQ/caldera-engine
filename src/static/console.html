@@ -133,6 +133,7 @@
 <header>
   <h1>VOLCANO <span>STUDIOS</span> · Review Console</h1>
   <span class="sub">Phase 1 — read-only artifact review</span>
+  <span id="healthChip" title="environment health" style="font-size:12px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:3px 12px;cursor:default">env…</span>
   <span id="progressChip">idle</span>
 </header>
 <div id="layout">
@@ -268,9 +269,9 @@ async function selectBook(name, el, isNew = false) {
         <div class="scenes">` + ch.scenes.map(s => {
           const src = s.boundary_source === "director_ai"
             ? '<span class="badge director">G4</span>' : "";
-          return `<div class="sceneRow" data-scene="${esc(s.scene_id)}">
+          return `<div class="sceneRow" data-scene="${esc(s.scene_id)}" ${s.omitted ? 'style="opacity:.45;text-decoration:line-through"' : ""}>
             <span class="sid">${esc(s.scene_id.split("_").pop())}</span>
-            <span class="ex">${esc(s.excerpt)}</span>${src}${covBadge(s)}
+            <span class="ex">${esc(s.excerpt)}</span>${s.omitted ? '<span class="badge" style="color:var(--bad);border-color:var(--bad)">omitted</span>' : ""}${src}${covBadge(s)}
           </div>`;
         }).join("") + `</div></div>`;
     }
@@ -398,7 +399,8 @@ function renderScene() {
   const tabs = [["transcript","Transcript"], ["lane","Production Lane" + (hasLane ? "" : " (empty)")], ["text","Scene Text"]];
   let html = `<div id="sceneHeader"><h2>${esc(d.scene_id)}</h2>
     <span class="prov">${d.lines.length} lines · ${d.lines.filter(l=>l.segment_type==="dialogue").length} dialogue</span>
-    <button class="ghost" id="openMixerBtn" style="padding:3px 12px;font-size:11.5px">🎚 Mixer</button></div>
+    <button class="ghost" id="openMixerBtn" style="padding:3px 12px;font-size:11.5px">🎚 Mixer</button>
+    <button class="ghost" id="omitSceneBtn" style="padding:3px 12px;font-size:11.5px;${state.detail && state.detail.omitted ? "color:var(--bad);border-color:var(--bad)" : ""}">${state.detail && state.detail.omitted ? "↩ Restore scene" : "✂ Omit scene"}</button></div>
     <div class="tabs">` + tabs.map(([id, label]) =>
       `<div class="tab ${state.tab===id?"active":""}" data-tab="${id}">${label}</div>`).join("") + `</div>`;
 
@@ -409,6 +411,15 @@ function renderScene() {
   $("#sceneView").innerHTML = html;
   const mb = $("#openMixerBtn");
   if (mb) mb.addEventListener("click", openMixer);
+  const ob = $("#omitSceneBtn");
+  if (ob) ob.addEventListener("click", async () => {
+    await fetch("/api/console/omit_scene", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ book: state.book, scene_id: state.scene, omit: !(state.detail && state.detail.omitted) }) });
+    state.detail = await api(`/api/console/scene?book=${encodeURIComponent(state.book)}&scene=${encodeURIComponent(state.scene)}`);
+    renderScene();
+    selectBook(state.book, document.querySelector(".bookCard.active"));
+  });
   if (state.tab === "transcript") wireCorrections(d);
   document.querySelectorAll(".tab").forEach(el =>
     el.addEventListener("click", () => { state.tab = el.dataset.tab; renderScene(); }));
@@ -709,6 +720,18 @@ async function pollProgress() {
   } catch { $("#progressChip").textContent = "idle"; }
 }
 
+async function loadHealth() {
+  try {
+    const h = await api("/api/console/health");
+    const col = h.status === "ok" ? "var(--ok)" : (h.status === "warn" ? "var(--warn)" : "var(--bad)");
+    const bad = h.checks.filter(c => c.status !== "ok");
+    $("#healthChip").innerHTML = `<span style="color:${col}">●</span> env ${h.status}`;
+    $("#healthChip").title = bad.length
+      ? bad.map(c => `[${c.status}] ${c.check}: ${c.detail}`).join("\n")
+      : "all environment checks passed";
+  } catch { $("#healthChip").textContent = "env ?"; }
+}
+loadHealth();
 loadBooks();
 pollProgress();
 setInterval(pollProgress, 4000);
