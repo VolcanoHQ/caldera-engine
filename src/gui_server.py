@@ -534,6 +534,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/console/mix_timeline":
                 from src import mix_timeline
                 payload = mix_timeline.scene_timeline(q("book"), q("scene"))
+            elif path == "/api/console/export":
+                result = console_api.export_manuscript(q("book"), int(q("tier") or 0))
+                if result is None:
+                    self.send_json_error(400, "Invalid book or tier")
+                    return
+                if "error" in result:
+                    self.send_json_error(409, result["error"])
+                    return
+                body_bytes = result["text"].encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Disposition", f'attachment; filename="{result["filename"]}"')
+                self.send_header("Content-Length", str(len(body_bytes)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body_bytes)
+                return
             elif path == "/api/console/health":
                 from src import boot_check
                 import json as _json
@@ -612,7 +629,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -686,6 +703,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"render start error: {e}")
                     self.send_json_error(500, f"Render error: {e}")
+            elif path == "/api/console/delete_book":
+                from src import console_api as _ca
+                try:
+                    result = _ca.delete_book(body.get("book", ""))
+                    if result is None:
+                        self.send_json_error(400, "Invalid book")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"delete_book error: {e}")
+                    self.send_json_error(500, f"Delete error: {e}")
             elif path == "/api/console/upload_source":
                 try:
                     filename = os.path.basename(body.get("filename") or "")

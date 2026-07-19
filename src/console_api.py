@@ -378,6 +378,105 @@ def usage_summary(project_id: str = "", book: str = "") -> Dict[str, Any]:
     return agg
 
 
+def export_manuscript(book: str, tier: int) -> Optional[Dict[str, str]]:
+    """Processed-manuscript text export, honoring human decisions (speaker
+    overrides, scene omits). Returns {"filename", "text"} or None.
+
+    tier 1 -> clean narration text (what a single narrator reads)
+    tier 2 -> attributed script: [Speaker] per line (the HumanProcessed format)
+    tier 3 -> the production crew's full script (tier3/production_script.txt)
+    """
+    book = _safe_book(book)
+    if not book or tier not in (1, 2, 3):
+        return None
+    if tier == 3:
+        path = os.path.join(_tier3_dir(book), "production_script.txt")
+        if not os.path.exists(path):
+            return {"error": "No Tier 3 production script yet — run the scene_director crew first."}
+        with open(path, encoding="utf-8") as f:
+            return {"filename": f"{book}_tier3_production_script.txt", "text": f.read()}
+
+    payloads = _load_lines(book)
+    if not payloads:
+        return {"error": "No line artifacts — ingest the book first."}
+    overrides = load_speaker_overrides(book)
+    omits = load_scene_overrides(book)
+    chapters = _load_json(os.path.join(_tier1_dir(book), "loop2_chapters.json")) or []
+    titles = {c.get("chapter_id"): c.get("title", "") for c in chapters}
+
+    out: List[str] = [f"# {book} — Tier {tier} "
+                      f"{'narration text' if tier == 1 else 'attributed script'}", ""]
+    seen_chapters = set()
+    for p in payloads:
+        sid = p.get("scene_id", "")
+        if omits.get(sid, {}).get("omit"):
+            continue
+        chap = sid.rsplit("_s", 1)[0]
+        if chap not in seen_chapters:
+            seen_chapters.add(chap)
+            out += ["", f"## {titles.get(chap) or chap}", ""]
+        out.append(f"[Scene {sid.rsplit('_s', 1)[-1]}]")
+        out.append("")
+        for l in p.get("lines", []):
+            l = dict(l)
+            apply_speaker_overrides([l], overrides)
+            if tier == 1:
+                out.append(l.get("text", ""))
+            else:
+                speaker = l.get("character", "Narrator") if l.get("segment_type") == "dialogue" else "Narrator"
+                out.append(f"[{speaker}] {l.get('text', '')}")
+            out.append("")
+    return {"filename": f"{book}_tier{tier}_{'narration' if tier == 1 else 'script'}.txt",
+            "text": "\n".join(out)}
+
+
+def delete_book(book: str) -> Optional[Dict[str, Any]]:
+    """Two intuitive levels: an INGESTED book's delete removes its analysis,
+    renders, jobs and project rows (the source file stays and the book returns
+    as 'new'); a NEW source's delete removes the file itself. A full purge is
+    therefore two deletes. Sources under data/corpus are never auto-deleted --
+    only data/uploads files are removable (corpus is the curated library)."""
+    import glob as _glob
+    import shutil as _shutil
+    if not book or "/" in book or "\\" in book or book in (".", ".."):
+        return None
+    pipeline_dir = os.path.join(PIPELINE_ROOT, book)
+    removed: Dict[str, Any] = {"book": book, "artifacts": False, "renders": 0,
+                               "jobs": 0, "projects": 0, "source": None}
+    if os.path.isdir(pipeline_dir):
+        _shutil.rmtree(pipeline_dir)
+        removed["artifacts"] = True
+        preview_slug = re.sub(r"[^A-Za-z0-9_\-]", "", book)  # tier_preview's naming
+        for p in _glob.glob(f"scratch/renders/{book}_tier*.*") + _glob.glob(f"scratch/tier_previews/{preview_slug}_tier*.*"):
+            try:
+                os.remove(p)
+                removed["renders"] += 1
+            except OSError:
+                pass
+        for p in _glob.glob("data/render_jobs/*.json"):
+            j = _load_json(p) or {}
+            if j.get("book") == book:
+                os.remove(p)
+                removed["jobs"] += 1
+        try:
+            import sqlite3
+            c = sqlite3.connect("data/projects.db")
+            c.execute("DELETE FROM projects WHERE book_stem = ?", (book,))
+            removed["projects"] = c.total_changes
+            c.commit(); c.close()
+        except Exception as e:
+            logger.warning(f"delete_book: project cleanup failed: {e}")
+    else:
+        # a "new" (never-ingested) source: deleting means the uploaded file
+        for ext in (".txt", ".epub"):
+            p = os.path.join("data/uploads", book + ext)
+            if os.path.exists(p):
+                os.remove(p)
+                removed["source"] = p
+    logger.info(f"delete_book({book}): {removed}")
+    return removed
+
+
 def progress() -> Dict[str, Any]:
     return _load_json(PROGRESS_FILE) or {}
 

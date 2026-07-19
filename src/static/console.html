@@ -252,6 +252,14 @@ async function selectBook(name, el, isNew = false) {
       <span id="prevTierStatus" class="hint"></span></div>
     <audio id="prevTierAudio" controls style="display:none; width:100%; margin-top:8px"></audio></div>
   <div class="card"><h3>Project</h3><div id="projectCard" class="hint">loading…</div></div>
+  <div class="card"><h3>Export processed manuscript</h3>
+    <div class="row">
+      <a class="ghost" style="padding:5px 14px;border:1px solid var(--line);border-radius:7px;text-decoration:none;color:var(--text)" href="/api/console/export?book=${encodeURIComponent(name)}&tier=1" download>Tier 1 · narration text</a>
+      <a class="ghost" style="padding:5px 14px;border:1px solid var(--line);border-radius:7px;text-decoration:none;color:var(--text)" href="/api/console/export?book=${encodeURIComponent(name)}&tier=2" download>Tier 2 · attributed script</a>
+      <a class="ghost" style="padding:5px 14px;border:1px solid var(--line);border-radius:7px;text-decoration:none;color:var(--text)" href="/api/console/export?book=${encodeURIComponent(name)}&tier=3" download>Tier 3 · production script</a>
+      <button class="ghost" id="deleteBookBtn" title="Delete this book" style="margin-left:auto;padding:5px 12px;color:var(--bad);border-color:var(--bad)">🗑 Delete book</button>
+    </div>
+    <div class="hint" style="margin-top:6px">exports honor your speaker corrections and omitted scenes · unavailable tiers return a message</div></div>
   <div class="card"><h3>Generate audiobook</h3>
     <div class="row">
       <select id="renderTier" style="width:auto;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px">
@@ -292,6 +300,21 @@ async function selectBook(name, el, isNew = false) {
   $("#tree").innerHTML = html || '<div class="empty">no structure artifacts</div>';
   document.querySelectorAll("#tree .sceneRow").forEach(el =>
     el.addEventListener("click", () => selectScene(el.dataset.scene, el)));
+  const db = $("#deleteBookBtn");
+  if (db) db.addEventListener("click", async () => {
+    if (!await confirmAction("Delete this book?",
+      `${state.book}: removes all analysis artifacts, renders, jobs and project records. ` +
+      "The source file is kept and the book returns as 'new' (delete again to remove an uploaded source file). " +
+      "Files in data/corpus are never auto-deleted.",
+      "Delete book")) return;
+    await fetch("/api/console/delete_book", { method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ book: state.book }) });
+    state.book = null; state.scene = null;
+    $("#tree").innerHTML = '<div class="empty">select a book</div>';
+    $("#sceneView").innerHTML = '<div class="empty">select a scene</div>';
+    loadBooks();
+  });
   wireRenderCard();
   refreshProjectCard();
   document.querySelectorAll("[data-tierprev]").forEach(btn => btn.addEventListener("click", async () => {
