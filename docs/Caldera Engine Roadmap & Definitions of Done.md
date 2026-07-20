@@ -1,4 +1,4 @@
-# Firespeaker Roadmap & Definitions of Done
+# Caldera Engine Roadmap & Definitions of Done
 
 *Authored 2026-07-16. The review ledger: every roadmap item, its Definition of Done
 (DoD), its status, and the evidence. An item is marked **✅ DONE** only when every DoD
@@ -7,7 +7,7 @@ Anything less is ⬜ OPEN or 🔶 PARTIAL, and says so.*
 
 **Universal DoD clauses (apply to every item, never repeated below):**
 1. Zero-LLM stress test passes 3/3 after the change.
-2. New/changed modules import cleanly under the `firespeaker` conda env.
+2. New/changed modules import cleanly under the `caldera` conda env.
 3. Test residue (fake data, temp listings, test drawers) removed.
 4. Committed with a descriptive message and pushed to `origin/main`.
 
@@ -210,7 +210,7 @@ HTMLParser); `.epub` accepted by the parser CLI and the render job's source find
       users + 30-day sessions in SQLite; code reuse refused.
 - [x] Session on every studio surface: `/login` page; `/api/auth/request_link·
       redeem·me·logout`; HttpOnly SameSite cookie.
-- [x] `FIRESPEAKER_AUTH=on` refuses unauthenticated access everywhere (API → 401,
+- [x] `CALDERA_AUTH=on` refuses unauthenticated access everywhere (API → 401,
       pages → 302 to /login); OFF (default) is byte-identical legacy behavior —
       both modes regression-tested live.
 - [x] `owner` mapping: render jobs stamped with the session's user id
@@ -288,7 +288,7 @@ user ids; payment processing on purchase; payout bookkeeping for sellers.
 
 ### T2-6 · GPU synthesis path / render queue — 🔶 PARTIAL (GPU half DONE, `a0c0572`)
 **DoD (GPU half — done):**
-- [x] `FIRESPEAKER_TTS_DEVICE` policy (auto/cpu/cuda) resolved in one place;
+- [x] `CALDERA_TTS_DEVICE` policy (auto/cpu/cuda) resolved in one place;
       all call sites defer to it; preflight VRAM validation; CUDA OOM demotes
       to CPU mid-render instead of killing the job; boot check reports policy.
 - [x] Measured on identical text (RTX A3000): synthesis RTF **0.484 GPU vs

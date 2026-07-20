@@ -1,6 +1,6 @@
-# Firespeaker Studio: Hybrid NLP Pipeline Design
+# Volcano Studios: Hybrid NLP Pipeline Design
 
-This document details the architectural specification for the Firespeaker Studio Hybrid Ingestion & Analysis Pipeline. To optimize processing speeds and compute costs while ensuring high-fidelity outputs, this pipeline integrates standard rule-based NLP (spaCy), a server-hosted Llama 3.1 8B speaker attribution fallback, and a distilled RoBERTa classifier for deep emotional prosody mapping.
+This document details the architectural specification for the Volcano Studios Hybrid Ingestion & Analysis Pipeline. To optimize processing speeds and compute costs while ensuring high-fidelity outputs, this pipeline integrates standard rule-based NLP (spaCy), a server-hosted Llama 3.1 8B speaker attribution fallback, and a distilled RoBERTa classifier for deep emotional prosody mapping.
 
 ---
 

@@ -1,4 +1,4 @@
-# Firespeaker Development Backlog — Delegable Tasks
+# Caldera Engine Development Backlog — Delegable Tasks
 
 *Authored 2026-07-07. Tasks graded by the AI capability needed to execute them safely.
 GREEN = well-specified, mechanical, low blast radius — suitable for small/cheap coding
@@ -7,7 +7,7 @@ RED = keep on frontier models (architecture, prompt design, forensic debugging).
 
 **Universal rules for any agent working these tasks:**
 1. After ANY change: `python -m src.tier_1_parser --stress-test` (run with the
-   conda env python: `/home/xbyooki/anaconda3/envs/firespeaker/bin/python`) must
+   conda env python: `/home/xbyooki/anaconda3/envs/caldera/bin/python`) must
    print `3/3 PASSED`. This is the regression gate.
 2. Syntax-check every edited file: `python -c "import ast; ast.parse(open(F).read())"`.
 3. Never edit prompts, provider gates, or validation/grounding rules unless the task
@@ -203,5 +203,5 @@ RED = keep on frontier models (architecture, prompt design, forensic debugging).
   via G-3's `--skip-ingest` after re-running the merge.
 - Peter Rabbit: `scratch/peter_rabbit_tier3_master_v10.wav` is the current reference
   master (foley routing + smoothed ambience + anchor remap).
-- Roadmap: `docs/Firespeaker Production Knowledge & Media Generation Roadmap.md`
+- Roadmap: `docs/Caldera Engine Production Knowledge & Media Generation Roadmap.md`
   still needs a marketplace lane paragraph (part of G-6).

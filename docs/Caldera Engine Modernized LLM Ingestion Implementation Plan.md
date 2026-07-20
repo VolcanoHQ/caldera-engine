@@ -1,6 +1,6 @@
-# Firespeaker Studio: Modernized LLM Ingestion Implementation Plan
+# Volcano Studios: Modernized LLM Ingestion Implementation Plan
 
-This plan details the implementation strategy for modernizing the Firespeaker Studio manuscript ingestion pipeline. By leveraging modern local instruction-tuned LLMs with large context windows, native structured output support, high-throughput engines, and RAG-driven memory injection, we can replace fragile rules-based pipelines (Tier 2) and paragraph-by-paragraph processing loops with a faster, more accurate batched system.
+This plan details the implementation strategy for modernizing the Volcano Studios manuscript ingestion pipeline. By leveraging modern local instruction-tuned LLMs with large context windows, native structured output support, high-throughput engines, and RAG-driven memory injection, we can replace fragile rules-based pipelines (Tier 2) and paragraph-by-paragraph processing loops with a faster, more accurate batched system.
 
 ---
 
@@ -458,9 +458,9 @@ To optimize narrative consistency and delivery-style accuracy, we recommend inst
 
 ---
 
-## 6. Steps to Integrate into Firespeaker
+## 6. Steps to Integrate into Caldera Engine
 
-1. **Initialize the Async Wrapper**: Integrate the `AsyncInferenceEngine` into the initialization block of `FirespeakerPipeline` (`main.py`).
+1. **Initialize the Async Wrapper**: Integrate the `AsyncInferenceEngine` into the initialization block of `CalderaPipeline` (`main.py`).
 2. **Refactor Ingestion Loop**: Modify `run_full_pipeline` in `main.py` to segment the entire manuscript into scenes first, and then run `batch_process_scenes` using `asyncio.run()`.
 3. **Inject RAG Prompts**: In `hierarchical_parser.py`, replace the rule checks (`Direct Speech Verb`, `Speaker Lock`, `Alternating Queue`) by calling `fetch_active_rag_context_rules` from `MemPalace` and appending the rules to the scene prompt.
 4. **Enforce Constraints**: Configure the connection payload format to enforce the JSON Schema. This allows the parser to directly load the model response as a Python dictionary (`json.loads(response)`), completely eliminating regex validation steps.

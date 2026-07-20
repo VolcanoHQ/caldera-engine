@@ -1,4 +1,4 @@
-# Firespeaker — Investor Pitch
+# Caldera Engine — Investor Pitch
 
 *Volcano Studios (GitHub: [VolcanoHQ](https://github.com/VolcanoHQ)) · July 2026*
 
@@ -6,7 +6,7 @@
 
 ## The one-liner
 
-> Producing one audiobook costs $5,000–$15,000 and takes months. Firespeaker turns a
+> Producing one audiobook costs $5,000–$15,000 and takes months. Caldera Engine turns a
 > manuscript into a fully-produced audiobook — narration, cast voices, music, sound
 > design — in about an hour, at near-zero marginal cost.
 
@@ -317,7 +317,7 @@ them to re-run it.
 
 "Every year four million books are published and almost none become audiobooks,
 because production costs five to fifteen thousand dollars a title. We built
-Firespeaker: upload a manuscript, pick a tier, press one button, and get back a
+Caldera Engine: upload a manuscript, pick a tier, press one button, and get back a
 chaptered audiobook — from a single clean narrator all the way up to a
 full-cast, scored, sound-designed audio drama. The analysis pipeline is
 deterministic-first with measured 99%+ accuracy against human references, so

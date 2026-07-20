@@ -1,4 +1,4 @@
-# Firespeaker Voice Dataset Methodology
+# Caldera Engine Voice Dataset Methodology
 
 *Authored 2026-07-13. The "separate but connected" lane of Volcano Studios: how a human
 voice becomes a production-grade asset. Tooling lives in `src/voice_dataset.py`; the

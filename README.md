@@ -1,8 +1,8 @@
-# Firespeaker
+# Caldera Engine
 
 *The production engine of [Volcano Studios](https://github.com/VolcanoHQ).*
 
-Manuscript in, audiobook out. Firespeaker turns raw text (.txt/.epub) into finished
+Manuscript in, audiobook out. Caldera Engine turns raw text (.txt/.epub) into finished
 audiobooks across three production tiers — single narrator, full character cast, and
 Graphic-Audio-style productions with scene-scored music and layered sound design —
 using free-tier and open-source models end to end. Deterministic-first analysis with
@@ -16,7 +16,7 @@ review console with a per-scene mix timeline, and zero-shot voice cloning via
 
 - **Local tool, no auth by default.** The studio server binds all interfaces with
   authentication OFF for a friction-free local workflow. Never port-forward or
-  deploy it bare — enable sessions with `FIRESPEAKER_AUTH=on` (magic-link auth,
+  deploy it bare — enable sessions with `CALDERA_AUTH=on` (magic-link auth,
   see `src/user_db.py`) before any non-local exposure.
 - **Engine code is MIT; generation models are not.** XTTS-v2 ships under the Coqui
   Public Model License (non-commercial) and MusicGen's weights under CC-BY-NC.
@@ -39,10 +39,10 @@ It is highly recommended to use a clean **Conda** or **venv** environment runnin
 #### Using Conda (Recommended):
 ```bash
 # Create a dedicated Conda environment
-conda create -n firespeaker python=3.10 -y
+conda create -n caldera python=3.10 -y
 
 # Activate the environment
-conda activate firespeaker
+conda activate caldera
 ```
 
 #### Using venv:
@@ -77,7 +77,7 @@ pip install -r requirements.txt
 
 ### 3. Download the NLP Language Model
 
-The Firespeaker pipeline uses spaCy's large English model for typographic normalization and fallback character attributions. Download it after installing requirements:
+The Caldera Engine pipeline uses spaCy's large English model for typographic normalization and fallback character attributions. Download it after installing requirements:
 
 ```bash
 python -m spacy download en_core_web_lg
@@ -95,7 +95,7 @@ GEMINI_API_KEY=your_google_ai_studio_key   # https://aistudio.google.com/apikey 
 GROQ_API_KEY=your_groq_key                  # https://console.groq.com/keys
 
 # Optional kill switch - set to "off" to force pure zero-cost Tier 1 even with keys present
-# FIRESPEAKER_LLM_ENRICHMENT=off
+# CALDERA_LLM_ENRICHMENT=off
 ```
 
 Without a `.env`, `--enable-llm-enrichment` still works if you have a local [Ollama](https://ollama.com) server running (`ollama serve`), since Ollama is the final fallback in the provider chain. Without any of the three (Gemini key, Groq key, or local Ollama), enrichment silently no-ops and Tier 1's default output is unaffected.
@@ -118,13 +118,13 @@ Three surfaces, one server:
 | **[http://localhost:8082/console](http://localhost:8082/console)** | **Review Console** — read-only Part→Chapter→Scene navigator with attribution provenance chips (which AI answered, reviewer corrections, confidence), the Tier 3 production lane per scene (music events, layered sound design, dramatized inserts), cached-line audition, and a live pipeline-progress chip |
 | **[http://localhost:8082/voicestudio](http://localhost:8082/voicestudio)** | **Voice Cloning Studio** — 7-step wizard: room-tone QC → guided recording session with instant measured verdicts → questionnaire → build → hear-your-clone preview → character personas + vocal SFX bank → consent-gated marketplace publish |
 
-The **voice marketplace** is exposed as REST under `/api/marketplace/*` (listings, semantic search, onboard, purchase-license, cast-to-character) — see [`src/voice_marketplace.py`](src/voice_marketplace.py) and the dataset methodology in [`docs/Firespeaker Voice Dataset Methodology.md`](docs/Firespeaker%20Voice%20Dataset%20Methodology.md) (`python -m src.voice_dataset` for the CLI lane).
+The **voice marketplace** is exposed as REST under `/api/marketplace/*` (listings, semantic search, onboard, purchase-license, cast-to-character) — see [`src/voice_marketplace.py`](src/voice_marketplace.py) and the dataset methodology in [`docs/Caldera Engine Voice Dataset Methodology.md`](docs/Caldera%20Engine%20Voice%20Dataset%20Methodology.md) (`python -m src.voice_dataset` for the CLI lane).
 
 ---
 
 ## 🧩 Production Tiers & Current Status
 
-Firespeaker's tiers describe **output ambition** (what kind of audiobook you get), each built on the previous one. The definitive per-AI accounting — how many AI passes each tier needs, their exact system prompts, provider policies, and validation rules — lives in [`docs/Firespeaker AI Roster & System Prompts.md`](docs/Firespeaker%20AI%20Roster%20&%20System%20Prompts.md).
+Caldera Engine's tiers describe **output ambition** (what kind of audiobook you get), each built on the previous one. The definitive per-AI accounting — how many AI passes each tier needs, their exact system prompts, provider policies, and validation rules — lives in [`docs/Caldera Engine AI Roster & System Prompts.md`](docs/Caldera%20Engine%20AI%20Roster%20&%20System%20Prompts.md).
 
 | Tier | Output | Text-analysis AIs | Status |
 |---|---|---|---|
@@ -195,6 +195,6 @@ Runs enrichment against `TheTaleofPeterRabbit.txt` and diffs the attributed spea
 *   `eval_tier1_llm_enrichment.py`: Accuracy harness comparing enriched output against hand-authored gold-standard corpus references
 *   `data/corpus/HumanProcessed/`: Hand-authored gold-standard Tier 1/2/3 reference scripts, used for evaluation
 *   `data/corpus/pipeline/{book}/`: Per-book artifacts — `tier1/` (loops + enrichment sidecars) and `tier3/` (spotting, production script, sound design, generation prompts, line overrides)
-*   `docs/`: Architecture docs — **start with [`Firespeaker AI Roster & System Prompts.md`](docs/Firespeaker%20AI%20Roster%20&%20System%20Prompts.md)** (every AI, counted and specified) and [`Firespeaker Production Knowledge & Media Generation Roadmap.md`](docs/Firespeaker%20Production%20Knowledge%20&%20Media%20Generation%20Roadmap.md) (layer model, storage mapping, execution chains); `Firespeaker Tier 1 Cascading Loops Design.md` for the Tier 1 loop spec
+*   `docs/`: Architecture docs — **start with [`Caldera Engine AI Roster & System Prompts.md`](docs/Caldera%20Engine%20AI%20Roster%20&%20System%20Prompts.md)** (every AI, counted and specified) and [`Caldera Engine Production Knowledge & Media Generation Roadmap.md`](docs/Caldera%20Engine%20Production%20Knowledge%20&%20Media%20Generation%20Roadmap.md) (layer model, storage mapping, execution chains); `Caldera Engine Tier 1 Cascading Loops Design.md` for the Tier 1 loop spec
 *   `voice_synthesis_testing/`: Audio benchmarking, evaluations, and QA metrics
 *   `nlp-testing/`: Older (pre-Tier-system) API integration and experimentation notebooks; superseded by `src/llm_client.py`, kept for reference

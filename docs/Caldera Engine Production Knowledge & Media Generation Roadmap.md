@@ -1,10 +1,10 @@
-# Firespeaker Production Knowledge & Media Generation Roadmap
+# Caldera Engine Production Knowledge & Media Generation Roadmap
 
 *Status: authored 2026-07-04; updated same day after Chains C and D shipped. Layers 1-3 are
 live end-to-end (first full Tier 3 master produced for Peter Rabbit); Layer 4's audio chains
 (C: MusicGen music + AudioLDM layered SFX; D: timeline assembly/mixing) are live; image/video
 chains (E/F) remain design-only. The per-AI accounting — every pass, its system prompt,
-provider policy, and validation — lives in `Firespeaker AI Roster & System Prompts.md`.*
+provider policy, and validation — lives in `Caldera Engine AI Roster & System Prompts.md`.*
 
 The goal: turn a raw manuscript into a **production knowledge base** rich enough to drive not just multi-voice audiobooks, but Graphic-Audio-style full productions (music, SFX, ambience) and eventually images/video — with every generation stage consuming the same structured scene/character records rather than re-analyzing text.
 

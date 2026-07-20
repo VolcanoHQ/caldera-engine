@@ -1,4 +1,4 @@
-# Firespeaker AI Roster & System Prompts
+# Caldera Engine AI Roster & System Prompts
 
 *Authored 2026-07-04. The authoritative accounting of every AI in the pipeline: how many,
 what each one does, its system prompt, provider policy, and validation. If a prompt in code

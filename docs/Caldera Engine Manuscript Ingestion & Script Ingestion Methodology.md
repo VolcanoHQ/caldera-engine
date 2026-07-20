@@ -1,12 +1,12 @@
-# Firespeaker Studio: Manuscript-to-Script Ingestion & Tiered Analysis Methodology
+# Volcano Studios: Manuscript-to-Script Ingestion & Tiered Analysis Methodology
 
-This document outlines the architectural flow, processing stages, and tiered parsing engine of Firespeaker Studio. It describes how raw literary manuscripts are normalized, decomposed into navigation hierarchies, and compiled into performance-ready script schemas. It concludes with a critical analysis of the current approach and proposes a Next-Generation Blueprint to solve current constraints in character detection, speed, and attribution confidence.
+This document outlines the architectural flow, processing stages, and tiered parsing engine of Volcano Studios. It describes how raw literary manuscripts are normalized, decomposed into navigation hierarchies, and compiled into performance-ready script schemas. It concludes with a critical analysis of the current approach and proposes a Next-Generation Blueprint to solve current constraints in character detection, speed, and attribution confidence.
 
 ---
 
 ## 1. Architectural Pipeline & Data Flow
 
-Firespeaker Studio processes manuscripts through a multi-stage NLP and Relational Database (MemPalace) pipeline. Below is the workflow showing how raw text is ingested, analyzed across the 3 processing tiers, and compiled into the final master audio:
+Volcano Studios processes manuscripts through a multi-stage NLP and Relational Database (MemPalace) pipeline. Below is the workflow showing how raw text is ingested, analyzed across the 3 processing tiers, and compiled into the final master audio:
 
 ```mermaid
 graph TD
@@ -58,7 +58,7 @@ Each paragraph is parsed character-by-character into a stream of alternating `na
 
 ## 3. The 3-Tier Parsing Methodology
 
-Firespeaker Studio operates three computational tiers to balance processing speed, compute costs, and speaker attribution accuracy.
+Volcano Studios operates three computational tiers to balance processing speed, compute costs, and speaker attribution accuracy.
 
 ### Tier 1: Express Narrator (Deterministic Bypass)
 * **Objective**: Rapid, zero-cost processing for single-narrator formats.

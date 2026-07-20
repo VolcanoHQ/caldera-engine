@@ -1,6 +1,6 @@
-# Firespeaker Studio: Tier 1 Cascading Loops Pipeline Design
+# Volcano Studios: Tier 1 Cascading Loops Pipeline Design
 
-This document details the software design for the Tier 1 deterministic cascading loops pipeline in Firespeaker Studio. Operating completely offline and on CPU, this pipeline processes raw text manuscripts into hierarchical script transcripts. By utilizing a 4-loop structured workflow, the engine systematically parses Parts, Chapters, Scenes, and Lines using robust regex patterns, character-by-character quote extraction, and Pydantic schema validation.
+This document details the software design for the Tier 1 deterministic cascading loops pipeline in Volcano Studios. Operating completely offline and on CPU, this pipeline processes raw text manuscripts into hierarchical script transcripts. By utilizing a 4-loop structured workflow, the engine systematically parses Parts, Chapters, Scenes, and Lines using robust regex patterns, character-by-character quote extraction, and Pydantic schema validation.
 
 ---
 
