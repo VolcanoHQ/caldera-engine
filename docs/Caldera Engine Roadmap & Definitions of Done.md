@@ -324,6 +324,16 @@ one-job-per-book detached workers (which do already survive restarts).
 **Evidence:** anchoring stays line-based, so mix decisions survive re-synthesis;
 Action Foley Spotter (`b7efa6b`) feeds the SFX lane this mixer exposes.
 
+### P-1 · Rename Firespeaker → The Caldera Engine + landing page — ✅ DONE (`a6a5d55`, `7b3917d`, `b169026`)
+**DoD:** Codename retired repo-wide: env vars `FIRESPEAKER_*` → `CALDERA_*`,
+identifiers (`CalderaPipeline`, `CalderaEngine`/`CalderaNLP` loggers), branding
+(company **Volcano Studios**, engine **The Caldera Engine**), 13 docs files
+renamed + prose swept; GitHub Pages landing page (`site/index.html`) with deploy
+workflow. Repo rename to `VolcanoHQ/caldera-engine` done manually on GitHub.
+**Evidence:** zero-LLM stress suite 3/3 post-rename (Les Mis 50/498/723 intact);
+boot check banner + console/index titles verified live on :8082;
+`grep -riI firespeaker src/ nlp_engine/ docs/ README.md SALES_PITCH.md` → 0 hits.
+
 ### Deferred indefinitely (revisit on demand)
 Hamlet play parser (Y-1) · marketplace storefront pages · Chain F video ·
 cross-book series identity table · full README rewrite.
