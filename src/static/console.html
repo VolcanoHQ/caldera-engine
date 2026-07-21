@@ -891,7 +891,7 @@ $("#uploadInput").addEventListener("change", async () => {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ filename: file.name, data: dataUrl }) });
     const j = await resp.json();
-    if (!resp.ok) { $("#uploadStatus").textContent = j.error || "upload failed"; return; }
+    if (!resp.ok) { $("#uploadStatus").textContent = (j.error && j.error.message) || j.error || "upload failed"; return; }
     $("#uploadStatus").textContent = "✓ " + j.book + " uploaded — select it and Generate";
     await loadBooks();
     const card = document.querySelector(`.bookCard[data-book="${CSS.escape(j.book)}"]`);
