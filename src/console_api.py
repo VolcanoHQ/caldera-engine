@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from src.book_structure import (
@@ -48,6 +48,7 @@ logger = logging.getLogger("ConsoleAPI")
 
 PIPELINE_ROOT = "data/corpus/pipeline"
 PROGRESS_FILE = "data/analysis_progress.json"
+_MARKETPLACE = None
 
 # Directories audio audition may serve from (path-traversal guard).
 AUDIO_WHITELIST = (
@@ -98,6 +99,43 @@ def _load_lines(book: str) -> List[Dict[str, Any]]:
     if data is None:
         data = _load_json(os.path.join(t1, "loop4_lines.json")) or []
     return data
+
+
+def _get_marketplace():
+    global _MARKETPLACE
+    if _MARKETPLACE is None:
+        from src.voice_marketplace import VoiceMarketplace
+        _MARKETPLACE = VoiceMarketplace()
+    return _MARKETPLACE
+
+
+def _get_drawer_info(character: str) -> Optional[Dict[str, Any]]:
+    from src.spatial_memory import MemPalace
+
+    palace = MemPalace(use_chroma=False)
+    try:
+        return palace.get_character_drawer(character)
+    finally:
+        palace.close()
+
+
+def _character_profiles(book: str) -> Dict[str, Dict[str, Any]]:
+    profiles = _load_json(os.path.join(_tier3_dir(book), "character_profiles.json")) or []
+    return {
+        item.get("name", ""): item
+        for item in profiles
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def _character_voice_query(book: str, character: str, explicit_query: str = "") -> str:
+    if explicit_query.strip():
+        return explicit_query.strip()
+    profile = _character_profiles(book).get(character, {})
+    profile_description = str(profile.get("visual_description") or profile.get("description") or "").strip()
+    if profile_description:
+        return f"{character}: {profile_description}"
+    return f"{character} audiobook character voice"
 
 
 def _write_json(path: str, payload: Any) -> str:
@@ -168,7 +206,7 @@ def _refresh_line_payloads(book: str, structure) -> List[Dict[str, Any]]:
 
 def _mark_structure_analysis_refreshed(structure, line_payloads: List[Dict[str, Any]]):
     updated = structure.model_copy(deep=True)
-    now = datetime.now(UTC).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     payload_scene_ids = {payload.get("scene_id", "") for payload in line_payloads}
     depth_by_id = {None: -1}
 
@@ -596,6 +634,84 @@ def book_speakers(book: str) -> List[str]:
             if l.get("segment_type") == "dialogue" and l.get("character"):
                 speakers.add(l["character"])
     return sorted(speakers | {"Narrator"})
+
+
+def director_cast_roster(book: str, *, limit: int = 3) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+    marketplace = _get_marketplace()
+    profiles = _character_profiles(book)
+    roster = []
+    for character in [name for name in book_speakers(book) if name != "Narrator"]:
+        drawer = _get_drawer_info(character)
+        query_text = _character_voice_query(book, character)
+        try:
+            suggestions = marketplace.search_marketplace(query_text, limit=max(1, limit))
+        except Exception:
+            suggestions = []
+        roster.append({
+            "character": character,
+            "query": query_text,
+            "profile": profiles.get(character),
+            "current_voice": drawer.get("voice_ref_path") if drawer else None,
+            "suggestions": suggestions,
+        })
+    return {"book": book, "characters": roster}
+
+
+def director_search_voices(book: str, character: str, *, query: str = "", limit: int = 5) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book or not (character or "").strip():
+        return None
+    marketplace = _get_marketplace()
+    query_text = _character_voice_query(book, character.strip(), query)
+    results = marketplace.search_marketplace(query_text, limit=max(1, limit))
+    return {
+        "book": book,
+        "character": character.strip(),
+        "query": query_text,
+        "results": results,
+    }
+
+
+def director_cast_character(
+    book: str,
+    character: str,
+    *,
+    description: str = "",
+    buyer: str = "local",
+    purpose: str = "audiobook production",
+    voice_id: str = "",
+) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    character = (character or "").strip()
+    if not book or not character:
+        return None
+    marketplace = _get_marketplace()
+    if voice_id:
+        cast = marketplace.cast_character_with_voice(
+            character_name=character,
+            voice_id=voice_id,
+            buyer=buyer,
+            purpose=purpose or f"cast as {character}",
+        )
+    else:
+        query_text = _character_voice_query(book, character, description)
+        cast = marketplace.cast_character(
+            character_name=character,
+            character_description=query_text,
+            buyer=buyer,
+            purpose=purpose or f"cast as {character}",
+        )
+    if cast is None:
+        raise ValueError(f"No suitable voice found for character '{character}'")
+    return {
+        "book": book,
+        "character": character,
+        "cast": cast,
+        "current_voice": (_get_drawer_info(character) or {}).get("voice_ref_path"),
+    }
 
 
 def usage_summary(project_id: str = "", book: str = "") -> Dict[str, Any]:

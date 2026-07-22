@@ -284,3 +284,52 @@ def test_director_refresh_can_chain_structure_refresh_for_stale_structure(tmp_pa
 
     assert refreshed["structure_refresh"] is not None
     assert refreshed["readiness"]["ok"] is True
+
+
+def test_director_cast_roster_and_search_use_marketplace_bridge(tmp_path, monkeypatch):
+    _fixture_pipeline(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    class FakeMarketplace:
+        def search_marketplace(self, query, limit=5):
+            return [{"voice_id": "voice_1", "voice_name": "Warm Narrator", "voice_ref_path": "data/voice_marketplace/v1/reference_mono.wav", "description": query, "score": 0.92}]
+
+    monkeypatch.setattr(console_api, "_get_marketplace", lambda: FakeMarketplace())
+    monkeypatch.setattr(console_api, "_get_drawer_info", lambda character: {"voice_ref_path": f"data/voice_refs/{character}.wav"})
+
+    roster = console_api.director_cast_roster("frankenstein", limit=2)
+    search = console_api.director_search_voices("frankenstein", "Walton", query="", limit=2)
+
+    assert roster["book"] == "frankenstein"
+    assert roster["characters"][0]["character"] == "Walton"
+    assert roster["characters"][0]["suggestions"][0]["voice_id"] == "voice_1"
+    assert "Walton" in search["query"]
+    assert search["results"][0]["voice_name"] == "Warm Narrator"
+
+
+def test_director_cast_character_supports_specific_listing(tmp_path, monkeypatch):
+    _fixture_pipeline(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    class FakeMarketplace:
+        def cast_character_with_voice(self, character_name, voice_id, buyer="local", purpose=""):
+            return {"character": character_name, "voice": {"voice_id": voice_id, "voice_ref_path": "data/voice_marketplace/v2/reference_mono.wav"}, "license": {"buyer": buyer, "purpose": purpose}}
+
+        def cast_character(self, character_name, character_description, buyer="local", purpose=""):
+            return {"character": character_name, "voice": {"voice_id": "voice_auto", "voice_ref_path": "data/voice_marketplace/auto/reference_mono.wav"}, "license": {"buyer": buyer, "purpose": purpose}}
+
+    monkeypatch.setattr(console_api, "_get_marketplace", lambda: FakeMarketplace())
+    monkeypatch.setattr(console_api, "_get_drawer_info", lambda character: {"voice_ref_path": f"data/mempalace/{character}.wav"})
+
+    explicit = console_api.director_cast_character(
+        "frankenstein",
+        "Walton",
+        voice_id="voice_2",
+        buyer="director",
+        purpose="cast for trailer",
+    )
+    auto = console_api.director_cast_character("frankenstein", "Walton", description="calm british male")
+
+    assert explicit["cast"]["voice"]["voice_id"] == "voice_2"
+    assert explicit["cast"]["license"]["buyer"] == "director"
+    assert auto["cast"]["voice"]["voice_id"] == "voice_auto"

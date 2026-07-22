@@ -626,6 +626,21 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 if payload is None:
                     self.send_json_error(400, "Invalid or unknown book")
                     return
+            elif path == "/api/console/director_cast":
+                payload = console_api.director_cast_roster(q("book"), limit=int(q("limit") or "3"))
+                if payload is None:
+                    self.send_json_error(400, "Invalid or unknown book")
+                    return
+            elif path == "/api/console/director_voice_search":
+                payload = console_api.director_search_voices(
+                    q("book"),
+                    q("character"),
+                    query=q("q"),
+                    limit=int(q("limit") or "5"),
+                )
+                if payload is None:
+                    self.send_json_error(400, "Invalid book or character")
+                    return
             elif path == "/api/console/progress":
                 payload = console_api.progress()
             elif path == "/api/console/trailer_scene":
@@ -745,7 +760,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -994,6 +1009,30 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"director_refresh error: {e}")
                     self.send_json_error(409, f"Director refresh error: {e}")
+            elif path == "/api/console/director_cast_character":
+                from src import console_api
+                try:
+                    result = console_api.director_cast_character(
+                        body.get("book", ""),
+                        body.get("character", ""),
+                        description=body.get("description", ""),
+                        buyer=body.get("buyer", self._owner()),
+                        purpose=body.get("purpose", "audiobook production"),
+                        voice_id=body.get("voice_id", ""),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid book or character")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"director_cast_character error: {e}")
+                    self.send_json_error(409, f"Director cast error: {e}")
             else:
                 self.handle_voicestudio(path, parsed_url.query, body=body)
         elif path == "/api/analyze":

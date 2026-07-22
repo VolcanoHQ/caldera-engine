@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence
 
 from pydantic import BaseModel, Field
@@ -29,7 +29,7 @@ BOOK_STRUCTURE_HISTORY_DIRNAME = "structure_history"
 
 
 def _utcnow() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _sha256_text(text: str) -> str:
