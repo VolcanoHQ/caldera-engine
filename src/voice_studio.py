@@ -244,8 +244,13 @@ def preview(session: str, text: str, pitch: float = 0.0, speed: float = 1.0) -> 
         if not synth.palace.get_character_drawer(drawer):
             synth.palace.register_character(character_name=drawer, voice_ref_path=ref,
                                             speed=1.0, pitch=0.0)
-        synth.synthesize_line(character_name=drawer, dialogue_text=text,
-                              target_emotion="Neutral", output_wav_path=out)
+        synth_result = synth.synthesize_line(character_name=drawer, dialogue_text=text,
+                                             target_emotion="Neutral", output_wav_path=out)
+    if (synth_result or {}).get("engine") in {"mock_tone", "commercial_sim_tone"}:
+        raise ValueError(
+            "Preview fallback produced a synthetic tone instead of speech. Install/configure a real speech engine "
+            "(XTTS via coqui-tts, or edge-tts + ffmpeg + internet) and try again."
+        )
     if not (os.path.exists(out) and os.path.getsize(out) > 0):
         return None
     if pitch or speed != 1.0:
@@ -257,7 +262,7 @@ def preview(session: str, text: str, pitch: float = 0.0, speed: float = 1.0) -> 
         subprocess.run(["ffmpeg", "-y", "-v", "quiet", "-i", out,
                         "-af", get_ffmpeg_filters(speed, pitch, rate), shifted], check=True)
         out = shifted
-    return {"wav": out, "text": text}
+    return {"wav": out, "text": text, "engine": (synth_result or {}).get("engine", "unknown")}
 
 
 # ---------------------------------------------------------------------------

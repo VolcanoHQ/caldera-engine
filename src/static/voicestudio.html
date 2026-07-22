@@ -235,8 +235,8 @@ function step3() {
   const doneCount = S.prompts.length - remaining.length;
   $("#main").innerHTML = `
     <h2>The full session</h2>
-    <p class="lead">${doneCount}/${S.prompts.length} prompts recorded. Each take is graded instantly —
-      re-record any tag by clicking it. You can stop anytime and come back; nothing is lost.</p>
+    <p class="lead">${doneCount}/${S.prompts.length} prompts recorded. Each take is graded instantly.
+      After each take, choose the next prompt tag yourself (no auto-advance). You can stop anytime and come back; nothing is lost.</p>
     <div class="card">
       <div class="clipList">${S.prompts.map(p => {
         const c = clips[p.prompt_id];
@@ -262,7 +262,9 @@ function step3() {
     const j = await post("record", { session:S.session, prompt_id:S.currentPrompt.prompt_id, kind:"prompt", data: await blobToDataURL(blob) });
     S.state.clips = S.state.clips || {}; S.state.clips[S.currentPrompt.prompt_id] = j;
     $("#sessVerdict").innerHTML = verdictHtml(j);
-    if (j.verdict !== "REJECT") setTimeout(() => { S.currentPrompt = null; render(); }, 1200);
+    if (j.verdict !== "REJECT") {
+      $("#sessVerdict").innerHTML += '<div class="hint">Saved. Select your next prompt tag when you are ready.</div>';
+    }
   }));
   wireNav();
 }

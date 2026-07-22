@@ -39,6 +39,118 @@
             --radius-lg: 24px;
             --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
+
+        function selectedBookName() {
+            const select = document.getElementById("bookSelect");
+            return select ? select.value : "";
+        }
+
+        function readinessBadge(label, ready, message) {
+            const color = ready ? "var(--accent-teal)" : "var(--accent-rose)";
+            const dot = ready ? "●" : "○";
+            return `<span style="display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; color: ${color};">
+                ${dot} <strong>${label}</strong> <span style="color: var(--text-muted); font-weight: 400;">${esc(message || "")}</span>
+            </span>`;
+        }
+
+        function renderOperationalReadiness() {
+            const tierEl = document.getElementById("macroTierReadiness");
+            const preflightEl = document.getElementById("macroPreflightReadiness");
+            if (tierEl) {
+                if (!currentTierReadiness) {
+                    tierEl.textContent = "Tier readiness unavailable.";
+                } else {
+                    tierEl.innerHTML =
+                        readinessBadge("Tier 1", !!currentTierReadiness.tier1?.ready, currentTierReadiness.tier1?.message) +
+                        readinessBadge("Tier 2", !!currentTierReadiness.tier2?.ready, currentTierReadiness.tier2?.message) +
+                        readinessBadge("Tier 3", !!currentTierReadiness.tier3?.ready, currentTierReadiness.tier3?.message);
+                }
+            }
+            if (preflightEl) {
+                if (!currentPreflight) {
+                    preflightEl.textContent = "Runtime preflight status not loaded yet.";
+                } else {
+                    const failing = (currentPreflight.checks || []).filter(c => c.status !== "ok");
+                    preflightEl.innerHTML = `<strong style="color:${currentPreflight.status === "ok" ? "var(--accent-teal)" : "var(--accent-rose)"};">
+                        Runtime: ${String(currentPreflight.status || "unknown").toUpperCase()}
+                    </strong> ${failing.length ? "— " + failing.map(c => `${esc(c.check)} (${esc(c.status)})`).join(", ") : "— all key dependencies found."}`;
+                }
+            }
+        }
+
+        async function refreshEnvironmentPreflight() {
+            try {
+                const response = await fetch(`${API_BASE}/api/console/preflight`);
+                if (!response.ok) {
+                    throw new Error("Failed preflight check");
+                }
+                currentPreflight = await response.json();
+                renderOperationalReadiness();
+            } catch (err) {
+                console.error("Preflight check failed:", err);
+            }
+        }
+
+        async function refreshTierReadiness() {
+            const book = selectedBookName();
+            if (!book) {
+                currentTierReadiness = null;
+                renderOperationalReadiness();
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE}/api/console/tier_readiness?book=${encodeURIComponent(book)}`);
+                if (!response.ok) {
+                    throw new Error("Failed tier readiness");
+                }
+                currentTierReadiness = await response.json();
+                renderOperationalReadiness();
+            } catch (err) {
+                console.error("Tier readiness failed:", err);
+            }
+        }
+
+        async function normalizeChapterTitles() {
+            const book = selectedBookName();
+            if (!book) return;
+            showLoading("Normalizing chapter titles", "Converting chapter numerals and refreshing canonical chapter names...");
+            try {
+                const response = await fetch(`${API_BASE}/api/console/normalize_chapters`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ book })
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || "Normalize chapters failed");
+                }
+                const result = await response.json();
+                await loadBookFromDropdown();
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function rebuildAllFromCanonical() {
+            const book = selectedBookName();
+            if (!book) return;
+            showLoading("Rebuilding from canonical structure", "Refreshing analysis caches and regenerating director artifacts...");
+            try {
+                const response = await fetch(`${API_BASE}/api/console/rebuild_all`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ book, include_qc: false, sync_mempalace: false })
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || "Rebuild-all failed");
+                }
+                await response.json();
+                await loadBookFromDropdown();
+            } finally {
+                hideLoading();
+            }
+        }
         
         * {
             box-sizing: border-box;
@@ -1005,6 +1117,25 @@
                         </div>
                     </div>
 
+                    <div class="glass-card" style="padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;">
+                            <h3 style="color: var(--accent-violet); font-size: 17px; font-weight: 700; margin: 0;">Pipeline Readiness & Housekeeping</h3>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button class="btn-upload" style="background: rgba(59,130,246,0.16); border: 1px solid #3b82f6; color: #93c5fd; box-shadow: none; font-size: 12px; padding: 8px 14px;" onclick="normalizeChapterTitles()">
+                                    Normalize Titles
+                                </button>
+                                <button class="btn-upload" style="background: rgba(249,115,22,0.15); border: 1px solid #f97316; color: #fdba74; box-shadow: none; font-size: 12px; padding: 8px 14px;" onclick="rebuildAllFromCanonical()">
+                                    Rebuild All from Canonical
+                                </button>
+                                <button class="btn-upload" style="background: rgba(16,185,129,0.15); border: 1px solid #10b981; color: #6ee7b7; box-shadow: none; font-size: 12px; padding: 8px 14px;" onclick="refreshEnvironmentPreflight()">
+                                    Check Runtime
+                                </button>
+                            </div>
+                        </div>
+                        <div id="macroTierReadiness" style="font-size: 13px; color: var(--text-muted);">Select and analyze a manuscript to show tier readiness.</div>
+                        <div id="macroPreflightReadiness" style="font-size: 13px; color: var(--text-muted);">Runtime preflight status not loaded yet.</div>
+                    </div>
+
                     <!-- First Sentence Verification Panel -->
                     <div class="glass-card" style="padding: 32px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
@@ -1463,6 +1594,8 @@
         const API_BASE = "";
         let currentHierarchy = null;
         let currentProfile = null;
+        let currentTierReadiness = null;
+        let currentPreflight = null;
 
         // Tab Slicer state
         let activeSlicerChapter = null;
@@ -1479,6 +1612,7 @@
         document.addEventListener("DOMContentLoaded", () => {
             setUIMode('express');
             fetchBooks();
+            refreshEnvironmentPreflight();
             document.getElementById("editorViewport").addEventListener("scroll", renderEditorVirtualList);
             // Window resize handler to adjust virtual list positioning
             window.addEventListener("resize", renderEditorVirtualList);
@@ -1574,6 +1708,8 @@
 
                 // Go to Setup or Macro Structure default
                 switchGlobalTab('macro');
+                refreshTierReadiness();
+                refreshEnvironmentPreflight();
 
             } catch (err) {
                 alert(`Error during analysis: ${err.message}`);
@@ -1615,6 +1751,7 @@
                 // Update dashboards
                 renderDashboard(currentProfile);
                 initMacroDashboard();
+                refreshTierReadiness();
                 renderSpeakerVerificationCard(currentHierarchy);
 
                 // Re-render Slicer and Editor
@@ -1696,6 +1833,9 @@
                     row.style.justifyContent = "space-between";
                     row.style.gap = "20px";
                     row.style.borderLeft = isChapterVerified ? "3px solid var(--accent-teal)" : "3px solid rgba(255,255,255,0.03)";
+                    row.style.cursor = "pointer";
+                    row.title = "Open this chapter in Scene Slicer";
+                    row.onclick = () => loadChapterInSlicer(chapter.chapter_id);
 
                     const textSec = document.createElement("div");
                     textSec.style.flex = "1";
@@ -1712,8 +1852,8 @@
                     const actionSec = document.createElement("div");
                     const isChecked = isChapterVerified ? "checked" : "";
                     actionSec.innerHTML = `
-                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-muted);">
-                            <input type="checkbox" ${isChecked} onchange="toggleVerifyChapterSplit('${chapter.chapter_id}', this.checked)" style="accent-color: var(--accent-teal); width: 16px; height: 16px;">
+                        <label onclick="event.stopPropagation()" style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px; color: var(--text-muted);">
+                            <input type="checkbox" ${isChecked} onclick="event.stopPropagation()" onchange="toggleVerifyChapterSplit('${chapter.chapter_id}', this.checked)" style="accent-color: var(--accent-teal); width: 16px; height: 16px;">
                             <span>Approved</span>
                         </label>
                     `;
@@ -1725,6 +1865,7 @@
             });
 
             document.getElementById("macroValProgress").textContent = `${verifiedChaptersCount} / ${totalChaptersCount}`;
+            renderOperationalReadiness();
         }
 
         async function toggleVerifyChapterSplit(chapterId, approved) {
@@ -1741,6 +1882,7 @@
                 });
             });
             saveHierarchyState();
+            initMacroDashboard();
         }
 
         async function verifyAllChaptersMacro() {
@@ -1756,6 +1898,7 @@
             });
             showLoading("Verifying Chapter Splits", "Locking boundary points and saving feedback data...");
             await saveHierarchyState();
+            await refreshTierReadiness();
             hideLoading();
         }
 

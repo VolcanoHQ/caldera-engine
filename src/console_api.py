@@ -14,6 +14,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import importlib.util
+import fnmatch
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -253,6 +256,141 @@ def _invalidate_tier3_artifacts(book: str) -> List[str]:
     return cleared
 
 
+def _invalidate_downstream_artifacts(book: str) -> Dict[str, Any]:
+    cleared_tier3 = _invalidate_tier3_artifacts(book)
+    cleared_previews: List[str] = []
+    slug = re.sub(r"[^A-Za-z0-9_\-]", "", book)
+    for folder, pattern in (("scratch/renders", f"{book}_tier*"), ("scratch/tier_previews", f"{slug}_tier*")):
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if fnmatch.fnmatch(name, pattern):
+                path = os.path.join(folder, name)
+                try:
+                    os.remove(path)
+                    cleared_previews.append(path)
+                except OSError:
+                    continue
+    return {"tier3": cleared_tier3, "renders": cleared_previews}
+
+
+def normalize_book_chapter_titles(book: str) -> Optional[Dict[str, Any]]:
+    from src.tier_1_parser import _normalize_chapter_title
+
+    book = _safe_book(book)
+    if not book:
+        return None
+
+    structure = load_structure(book)
+    updated = structure.model_copy(deep=True)
+    renamed = 0
+    for section in updated.sections:
+        if section.content_type != "chapter" or section.status != "active":
+            continue
+        normalized = _normalize_chapter_title(section.title)
+        if normalized and normalized != section.title:
+            section.title = normalized
+            section.updated_at = datetime.now(timezone.utc).isoformat()
+            renamed += 1
+    if renamed:
+        updated.updated_at = datetime.now(timezone.utc).isoformat()
+        save_book_structure(updated, _book_structure_path(book))
+        structure = updated
+
+    legacy_path = os.path.join(_tier1_dir(book), "loop2_chapters.json")
+    legacy = _load_json(legacy_path)
+    legacy_renamed = 0
+    if isinstance(legacy, list):
+        for chapter in legacy:
+            if not isinstance(chapter, dict):
+                continue
+            title = str(chapter.get("title", ""))
+            normalized = _normalize_chapter_title(title)
+            if normalized and normalized != title:
+                chapter["title"] = normalized
+                legacy_renamed += 1
+        if legacy_renamed:
+            _write_json(legacy_path, legacy)
+
+    payloads = adapter_load_line_payloads(book)
+    hierarchy_data = structure_to_gui_hierarchy(structure, line_payloads=payloads)
+    slug = re.sub(r"[^a-zA-Z0-9_\-]", "", book)
+    cache_dir = os.path.join("data", "processed", slug, "Tier_1")
+    hierarchy_cache = _write_json(os.path.join(cache_dir, "hierarchy.json"), hierarchy_data)
+
+    return {
+        "book": book,
+        "renamed_chapters": renamed,
+        "renamed_legacy_chapters": legacy_renamed,
+        "hierarchy_cache": hierarchy_cache,
+        "structure": structure.model_dump(),
+    }
+
+
+def environment_preflight() -> Dict[str, Any]:
+    from src import boot_check
+
+    checks: List[Dict[str, str]] = []
+    for module_name, label, detail in (
+        ("edge_tts", "edge_tts", "Voice preview fallback-to-tone protection requires this for natural cloud TTS."),
+        ("qdrant_client", "qdrant_client", "Director voice search/casting integrations require this package."),
+    ):
+        present = importlib.util.find_spec(module_name) is not None
+        checks.append({
+            "check": label,
+            "status": "ok" if present else "warn",
+            "detail": "installed" if present else f"missing. {detail}",
+        })
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    checks.append({
+        "check": "ffmpeg_binary",
+        "status": "ok" if ffmpeg_path else "fail",
+        "detail": ffmpeg_path or "ffmpeg not found on PATH",
+    })
+
+    boot = boot_check.run_boot_checks(fast=True)
+    worst = "ok"
+    for entry in [*checks, *boot.get("checks", [])]:
+        if entry.get("status") == "fail":
+            worst = "fail"
+            break
+        if entry.get("status") == "warn":
+            worst = "warn"
+    return {
+        "status": worst,
+        "checks": checks,
+        "boot": boot,
+    }
+
+
+def tier_readiness(book: str) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+    structure = load_structure(book)
+    readiness = structure_readiness(structure, require_analysis=True)
+    payloads = adapter_load_line_payloads(book)
+    has_lines = bool(payloads)
+    has_enriched_dialogue = any(
+        line.get("segment_type") == "dialogue"
+        and str(line.get("attribution_method", "Tier 1 Default")) != "Tier 1 Default"
+        for payload in payloads
+        for line in payload.get("lines", [])
+    )
+    t3 = _tier3_dir(book)
+    has_tier3 = all(
+        os.path.exists(os.path.join(t3, name))
+        for name in ("production_script.json", "sound_design.json", "dramatization.json")
+    )
+    return {
+        "book": book,
+        "tier1": {"ready": readiness.get("ok", False) and has_lines, "message": "Narrator flow ready" if has_lines else "No line artifacts yet"},
+        "tier2": {"ready": has_enriched_dialogue, "message": "Attributed cast ready" if has_enriched_dialogue else "Run Tier 2 enrichment"},
+        "tier3": {"ready": has_tier3, "message": "Director artifacts ready" if has_tier3 else "Run director refresh"},
+    }
+
+
 def get_book_structure(book: str) -> Optional[Dict[str, Any]]:
     book = _safe_book(book)
     if not book:
@@ -292,11 +430,13 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
         raise ValueError(f"Unknown structure action: {action}")
 
     save_book_structure(updated, _book_structure_path(book))
+    invalidated = _invalidate_downstream_artifacts(book)
     return {
         "book": book,
         "action": action,
         "structure": updated.model_dump(),
         "readiness": structure_readiness(updated, require_analysis=True),
+        "invalidated": invalidated,
     }
 
 
@@ -304,6 +444,7 @@ def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
     book = _safe_book(book)
     if not book:
         return None
+    normalized = normalize_book_chapter_titles(book)
     structure = load_structure(book)
     source_path = _resolve_source_path(book, structure.source_file)
     if not source_path:
@@ -330,10 +471,11 @@ def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
     profile_data = profiler.profile_book(source_path, hierarchy_data=hierarchy_data)
     profile_cache = os.path.join(cache_dir, "profile.json")
     profiler.save_profile(profile_data, profile_cache)
-    cleared_tier3 = _invalidate_tier3_artifacts(book)
+    invalidated = _invalidate_downstream_artifacts(book)
 
     return {
         "book": book,
+        "normalized": normalized,
         "structure": refreshed_structure.model_dump(),
         "readiness": structure_readiness(refreshed_structure, require_analysis=True),
         "hierarchy": hierarchy_data,
@@ -343,7 +485,7 @@ def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
             "loop4_lines_enriched": enriched_path,
             "hierarchy_cache": hierarchy_cache,
             "profile_cache": profile_cache,
-            "cleared_tier3": cleared_tier3,
+            "invalidated": invalidated,
         },
     }
 
@@ -411,6 +553,33 @@ def refresh_book_director(
     }
 
 
+def rebuild_book_pipeline(
+    book: str,
+    *,
+    include_qc: bool = False,
+    sync_mempalace: bool = False,
+) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+    normalized = normalize_book_chapter_titles(book)
+    structure_refresh = refresh_book_structure(book)
+    director_refresh = refresh_book_director(
+        book,
+        refresh_structure=False,
+        include_qc=include_qc,
+        sync_mempalace=sync_mempalace,
+    )
+    readiness = tier_readiness(book)
+    return {
+        "book": book,
+        "normalized": normalized,
+        "structure_refresh": structure_refresh,
+        "director_refresh": director_refresh,
+        "tier_readiness": readiness,
+    }
+
+
 def list_books() -> List[Dict[str, Any]]:
     """Every ingested book with an inventory of which artifacts exist."""
     books = []
@@ -428,6 +597,7 @@ def list_books() -> List[Dict[str, Any]]:
         entry = {
             "book": name,
             "scenes": scenes_count,
+            "tier_readiness": tier_readiness(name),
             "artifacts": {
                 "enriched": os.path.exists(os.path.join(t1, "loop4_lines_enriched.json")),
                 "alias_merges": os.path.exists(os.path.join(t1, "loopE_llm_alias_merges.json")),

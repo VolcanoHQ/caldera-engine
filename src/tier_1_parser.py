@@ -599,7 +599,7 @@ Return JSON: {{"headings": [{{"heading_line": "..."}}]}}
             continue
         chapters.append({
             "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-            "title": needle[:80],
+            "title": _normalize_chapter_title(needle[:80]),
             "text_block": block,
         })
     return chapters if len(chapters) >= 2 else None
@@ -1003,6 +1003,102 @@ def clean_front_matter(text: str) -> str:
     scrubber = ClutterScrubber()
     return scrubber.remove_front_matter(text)
 
+
+_CHAPTER_WORD_NUMBERS = {
+    "ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
+    "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
+}
+
+
+def _roman_to_int(value: str) -> int:
+    roman_values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    total, prev = 0, 0
+    for ch in reversed(value):
+        v = roman_values.get(ch, 0)
+        total = total - v if v < prev else total + v
+        prev = max(prev, v)
+    return total
+
+
+def _chapter_heading_components(title: str) -> Tuple[Optional[int], str]:
+    match = re.match(
+        r'^\s*(?:CHAPTER|CHAPITRE)\s+([IVXLCDM]+|[0-9]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)\b(.*)$',
+        title or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, ""
+    number_raw = match.group(1).strip().upper()
+    suffix = (match.group(2) or "").strip(" .:-\t")
+    if number_raw.isdigit():
+        number = int(number_raw)
+    elif number_raw in _CHAPTER_WORD_NUMBERS:
+        number = _CHAPTER_WORD_NUMBERS[number_raw]
+    else:
+        number = _roman_to_int(number_raw)
+    return number, suffix.strip()
+
+
+def _normalize_chapter_title(title: str) -> str:
+    number, suffix = _chapter_heading_components(title)
+    if number is not None:
+        return f"Chapter {number}: {suffix}" if suffix else f"Chapter {number}"
+
+    bare_roman = re.match(r'^\s*([IVXLCDM]+)(?:--|\s*[-.]\s*)(.+?)\s*$', title or "", re.IGNORECASE)
+    if bare_roman:
+        number = _roman_to_int(bare_roman.group(1).upper())
+        suffix = bare_roman.group(2).strip(" .:-\t")
+        return f"Chapter {number}: {suffix}" if suffix else f"Chapter {number}"
+
+    return (title or "").strip()
+
+
+def _looks_intro_like(value: str) -> bool:
+    return bool(re.search(r'\b(introduction|intro|prologue|preface|foreword)\b', value or "", re.IGNORECASE))
+
+
+def _normalized_similarity(a: str, b: str) -> float:
+    norm_a = re.sub(r"\s+", " ", (a or "").strip().lower())
+    norm_b = re.sub(r"\s+", " ", (b or "").strip().lower())
+    if not norm_a or not norm_b:
+        return 0.0
+    if norm_a in norm_b or norm_b in norm_a:
+        return min(len(norm_a), len(norm_b)) / max(len(norm_a), len(norm_b))
+    a_words = set(norm_a.split())
+    b_words = set(norm_b.split())
+    if not a_words or not b_words:
+        return 0.0
+    return len(a_words & b_words) / len(a_words | b_words)
+
+
+def _resolve_chapter_heading_conflicts(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(chapters) < 2:
+        return chapters
+
+    resolved: List[Dict[str, Any]] = [dict(chapters[0])]
+    for chapter in chapters[1:]:
+        current = dict(chapter)
+        prev = resolved[-1]
+        prev_num, prev_suffix = _chapter_heading_components(prev.get("title", ""))
+        curr_num, _ = _chapter_heading_components(current.get("title", ""))
+
+        if prev_num is not None and curr_num is not None and prev_num == curr_num:
+            prev_text = prev.get("text_block", "")
+            curr_text = current.get("text_block", "")
+            similar = _normalized_similarity(prev_text[:3000], curr_text[:3000]) >= 0.92
+            if similar:
+                if len(curr_text) > len(prev_text):
+                    prev["text_block"] = curr_text
+                continue
+
+            prev_intro_signal = _looks_intro_like(prev_suffix) or _looks_intro_like(prev_text[:250])
+            if prev_intro_signal and prev_suffix:
+                prev["title"] = prev_suffix.title()
+
+        resolved.append(current)
+
+    return resolved
+
 def identify_parts(raw_text: str) -> List[Dict[str, Any]]:
     """
     Loop 1: Part Identification (Macro-Router)
@@ -1100,12 +1196,12 @@ def identify_chapters(part_text: str, part_id: str) -> List[Dict[str, Any]]:
                 if block:
                     chapters.append({
                         "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-                        "title": f"Section {numeral}",
+                        "title": f"Section {_roman_to_int(numeral)}",
                         "text_block": block,
                     })
             if len(chapters) >= 3:
                 logger.info(f"Bare-roman section sequence detected: {len(chapters)} chapters.")
-                return chapters
+                return _resolve_chapter_heading_conflicts(chapters)
 
         # Gate 2 Fallback
         return [{
@@ -1132,11 +1228,11 @@ def identify_chapters(part_text: str, part_id: str) -> List[Dict[str, Any]]:
             continue
         chapters.append({
             "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-            "title": heading,
+            "title": _normalize_chapter_title(heading),
             "text_block": text_chunk
         })
         
-    return chapters
+    return _resolve_chapter_heading_conflicts(chapters)
 
 def identify_scenes(chapter_text: str, chapter_id: str, max_chars: int = 15000, is_single_chapter_book: bool = False) -> List[Dict[str, Any]]:
     """
@@ -1315,8 +1411,19 @@ def extract_quotes_safely(paragraph: str) -> List[Dict[str, Any]]:
             
     return cleaned_segments
 
-def parse_tier_1_lines(scene_text: str, part_num: int, chapter_num: int, scene_num: int) -> List[ScriptLine]:
-    """Loop 4: Line Parsing & Narrator Attribution (The Handoff)"""
+def parse_tier_1_lines(
+    scene_text: str,
+    part_num: int,
+    chapter_num: int,
+    scene_num: int,
+    *,
+    narrator_only: bool = True,
+) -> List[ScriptLine]:
+    """Loop 4: Line Parsing & Narrator Attribution (The Handoff).
+
+    narrator_only keeps Tier 1 paragraph flow intact so quoted words remain part
+    of narrator delivery. When False, quote boundaries are split for attribution.
+    """
     # Split paragraphs by double newlines to preserve paragraph integrity, then strip
     paragraphs = [p.strip() for p in re.split(r'\n\n+', scene_text) if p.strip()]
     script_lines = []
@@ -1346,7 +1453,11 @@ def parse_tier_1_lines(scene_text: str, part_num: int, chapter_num: int, scene_n
     for p in paragraphs:
         # Normalize internal single newlines inside paragraph to space to avoid mid-sentence line wrap splits
         p_normalized = re.sub(r'\s*\n\s*', ' ', p)
-        segments = extract_quotes_safely(p_normalized)
+        if narrator_only:
+            cleaned = p_normalized.strip()
+            segments = [{"type": "narrative", "text": cleaned}] if cleaned else []
+        else:
+            segments = extract_quotes_safely(p_normalized)
         for seg_idx, segment in enumerate(segments):
             # Deterministic line_id based on text content
             raw_id = f"p{part_num}_c{chapter_num}_s{scene_num}_l{line_counter}_{segment['text']}"
@@ -1678,7 +1789,8 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
                     scene_text=scene_block,
                     part_num=p_idx + 1,
                     chapter_num=total_chapters,
-                    scene_num=total_scenes
+                    scene_num=total_scenes,
+                    narrator_only=not enable_llm_enrichment,
                 )
                 print(f"     [Loop 4] Scene {total_scenes} -> Extracted {len(lines)} speech/narrative lines.")
 
