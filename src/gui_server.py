@@ -692,6 +692,13 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         payload = boot_check.run_boot_checks(fast=True)
                 except Exception:
                     payload = boot_check.run_boot_checks(fast=True)
+            elif path == "/api/console/preflight":
+                payload = console_api.environment_preflight()
+            elif path == "/api/console/tier_readiness":
+                payload = console_api.tier_readiness(q("book"))
+                if payload is None:
+                    self.send_json_error(400, "Invalid or unknown book")
+                    return
             elif path == "/api/console/audio":
                 wav = console_api.resolve_audio(q("file"))
                 if not wav:
@@ -760,7 +767,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character", "/api/console/rebuild_all", "/api/console/normalize_chapters"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -1009,6 +1016,44 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"director_refresh error: {e}")
                     self.send_json_error(409, f"Director refresh error: {e}")
+            elif path == "/api/console/rebuild_all":
+                from src import console_api
+                try:
+                    result = console_api.rebuild_book_pipeline(
+                        body.get("book", ""),
+                        include_qc=bool(body.get("include_qc")),
+                        sync_mempalace=bool(body.get("sync_mempalace")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid or unknown book")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"rebuild_all error: {e}")
+                    self.send_json_error(409, f"Rebuild-all error: {e}")
+            elif path == "/api/console/normalize_chapters":
+                from src import console_api
+                try:
+                    result = console_api.normalize_book_chapter_titles(body.get("book", ""))
+                    if result is None:
+                        self.send_json_error(400, "Invalid or unknown book")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"normalize_chapters error: {e}")
+                    self.send_json_error(409, f"Normalize chapters error: {e}")
             elif path == "/api/console/director_cast_character":
                 from src import console_api
                 try:
@@ -1184,7 +1229,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             import uuid
             preview_filename = f"scratch/preview_{uuid.uuid4().hex}.wav"
             
-            synth.synthesize_line(
+            synth_result = synth.synthesize_line(
                 character_name=char_name,
                 dialogue_text=text,
                 target_emotion="Neutral",
@@ -1192,6 +1237,18 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 pitch_modifier=pitch_mod,
                 speed_modifier=speed_mod
             )
+            if (synth_result or {}).get("engine") in {"mock_tone", "commercial_sim_tone"}:
+                try:
+                    if os.path.exists(preview_filename):
+                        os.remove(preview_filename)
+                except OSError:
+                    pass
+                self.send_json_error(
+                    503,
+                    "Voice preview fallback produced a synthetic tone. Install/configure a real speech engine "
+                    "(XTTS via coqui-tts, or edge-tts + ffmpeg + internet) and try again."
+                )
+                return
             
             if os.path.exists(preview_filename):
                 with open(preview_filename, "rb") as f:

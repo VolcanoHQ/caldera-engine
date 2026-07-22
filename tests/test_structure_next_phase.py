@@ -111,7 +111,7 @@ def test_structure_refresh_restores_render_readiness_and_rebuilds_cache(tmp_path
     assert refreshed["hierarchy"]["metadata"]["book_structure_version"] == refreshed["structure"]["structure_version"]
     assert os.path.exists(tmp_path / "data" / "processed" / "frankenstein" / "Tier_1" / "hierarchy.json")
     assert os.path.exists(tmp_path / "data" / "processed" / "frankenstein" / "Tier_1" / "profile.json")
-    assert refreshed["artifacts"]["cleared_tier3"]
+    assert refreshed["artifacts"]["invalidated"]["tier3"]
     assert not (tier3_dir / "production_script.json").exists()
 
     class _Proc:
@@ -219,7 +219,7 @@ def test_structure_refresh_updates_gui_hierarchy_from_canonical_titles(tmp_path,
     legacy = json.loads((pipeline_dir / "loop2_chapters.json").read_text(encoding="utf-8"))
 
     assert "Opening Chapter" in chapter_titles
-    assert legacy[2]["title"] == "CHAPTER I"
+    assert legacy[2]["title"] == "Chapter 1"
 
 
 def test_director_refresh_rebuilds_tier3_from_canonical_manifest(tmp_path, monkeypatch):
@@ -255,7 +255,7 @@ def test_director_refresh_rebuilds_tier3_from_canonical_manifest(tmp_path, monke
     refreshed = console_api.refresh_book_director("frankenstein")
 
     assert refreshed["readiness"]["ok"] is True
-    assert captured["chapter_titles"] == ["CHAPTER I", "LETTER I", "LETTER II"]
+    assert captured["chapter_titles"] == ["Chapter 1", "LETTER I", "LETTER II"]
     assert os.path.exists(tmp_path / "data" / "corpus" / "pipeline" / "frankenstein" / "tier3" / "canonical_manifest.json")
 
 
@@ -333,3 +333,49 @@ def test_director_cast_character_supports_specific_listing(tmp_path, monkeypatch
     assert explicit["cast"]["voice"]["voice_id"] == "voice_2"
     assert explicit["cast"]["license"]["buyer"] == "director"
     assert auto["cast"]["voice"]["voice_id"] == "voice_auto"
+
+
+def test_normalize_chapter_titles_backfills_canonical_and_legacy(tmp_path, monkeypatch):
+    _, pipeline_dir = _fixture_pipeline(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    load_structure("frankenstein", source_file="data/uploads/frankenstein.txt")
+
+    result = console_api.normalize_book_chapter_titles("frankenstein")
+    legacy = json.loads((pipeline_dir / "loop2_chapters.json").read_text(encoding="utf-8"))
+    structure = load_structure("frankenstein")
+    chapter_titles = [section.title for section in structure.sections if section.content_type == "chapter" and section.status == "active"]
+
+    assert result["renamed_chapters"] >= 1
+    assert result["renamed_legacy_chapters"] >= 1
+    assert "Chapter 1" in chapter_titles
+    assert legacy[2]["title"] == "Chapter 1"
+
+
+def test_rebuild_book_pipeline_runs_refresh_chain(tmp_path, monkeypatch):
+    _fixture_pipeline(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(scene_director, "direct_manifest", lambda manifest_path, sync_mempalace=False: {"tier3_dir": "tier3", "scenes": 3, "llm_directed": 0})
+    monkeypatch.setattr(scene_director, "run_sound_design", lambda manifest_path: "sound_design.json")
+    monkeypatch.setattr(scene_director, "run_dramatization", lambda manifest_path, *args, **kwargs: "dramatization.json")
+    monkeypatch.setattr(scene_director, "run_character_design", lambda manifest_path, sync_mempalace=False: "character_profiles.json")
+
+    result = console_api.rebuild_book_pipeline("frankenstein")
+
+    assert result["structure_refresh"]["readiness"]["ok"] is True
+    assert result["director_refresh"]["readiness"]["ok"] is True
+    assert result["tier_readiness"]["tier1"]["ready"] is True
+
+
+def test_environment_preflight_reports_dependency_checks(tmp_path, monkeypatch):
+    _fixture_pipeline(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(console_api.importlib.util, "find_spec", lambda name: None if name == "edge_tts" else object())
+    monkeypatch.setattr(console_api.shutil, "which", lambda name: "C:\\ffmpeg.exe" if name == "ffmpeg" else None)
+
+    report = console_api.environment_preflight()
+
+    checks = {entry["check"]: entry for entry in report["checks"]}
+    assert checks["edge_tts"]["status"] == "warn"
+    assert checks["ffmpeg_binary"]["status"] == "ok"

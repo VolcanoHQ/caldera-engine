@@ -457,7 +457,8 @@ class VoiceSynthesizer:
             "character": character_name,
             "output_path": output_wav_path,
             "reference_used": "commercial_api_elevenlabs",
-            "modulation_applied": {"speed": 1.0, "pitch": 0.0}
+            "modulation_applied": {"speed": 1.0, "pitch": 0.0},
+            "engine": "commercial_sim_tone",
         }
 
     def synthesize_line(
@@ -508,6 +509,8 @@ class VoiceSynthesizer:
         
         # 2. Dynamic reference fetching (emotional query similarity check)
         optimal_ref_path, _ = self.palace.query_optimal_voice(character_name, target_emotion)
+        xtts_error: Optional[str] = None
+        edge_tts_error: Optional[str] = None
         
         # 3. Model execution
         model_type = "bark" if use_bark else "xtts"
@@ -646,6 +649,7 @@ class VoiceSynthesizer:
                     "engine": "xtts_v2_local"
                 }
             except Exception as e:
+                xtts_error = str(e)
                 logger.warning(f"XTTS-v2 synthesis failed for '{character_name}': {e}. Falling back to Edge TTS.")
 
         edge_tts_success = False
@@ -775,6 +779,7 @@ class VoiceSynthesizer:
             edge_tts_success = True
             logger.info(f"Successfully generated Edge TTS voice for '{character_name}' at {output_wav_path}")
         except Exception as e:
+            edge_tts_error = str(e)
             logger.warning(f"Edge TTS synthesis failed: {e}. Falling back to modulated math tone.")
         finally:
             if 'mp3_path' in locals() and os.path.exists(mp3_path):
@@ -853,7 +858,10 @@ class VoiceSynthesizer:
             "character": character_name,
             "output_path": output_wav_path,
             "reference_used": optimal_ref_path,
-            "modulation_applied": modulation_config
+            "modulation_applied": modulation_config,
+            "engine": "edge_tts" if edge_tts_success else "mock_tone",
+            "xtts_error": xtts_error,
+            "edge_tts_error": edge_tts_error,
         }
 
 
