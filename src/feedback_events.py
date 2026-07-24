@@ -28,6 +28,8 @@ from typing import Any
 
 # ── Storage root ──────────────────────────────────────────────────────────────
 FEEDBACK_DIR = os.environ.get("CALDERA_FEEDBACK_DIR", "data/feedback")
+ANONYMIZE_FEEDBACK = os.environ.get("CALDERA_FEEDBACK_ANONYMIZE", "1").strip().lower() not in ("0", "false", "no")
+_ANON_SALT = os.environ.get("CALDERA_FEEDBACK_SALT", "caldera-feedback")
 
 # ── Value-score tiers ─────────────────────────────────────────────────────────
 VALUE_CRITICAL = "critical"
@@ -85,6 +87,18 @@ _EVENT_CLASSIFICATION: dict[str, tuple[str, str]] = {
 _ELIGIBLE_SCORES: frozenset[str] = frozenset({VALUE_CRITICAL, VALUE_HIGH})
 # Value scores that require a human reviewer before the event is used for training
 _REVIEW_REQUIRED_SCORES: frozenset[str] = frozenset({VALUE_CRITICAL})
+_SENSITIVE_KEYS: frozenset[str] = frozenset({
+    "text",
+    "dialogue",
+    "narration_before",
+    "narration_after",
+    "raw_scene_text",
+    "text_block",
+    "title",
+    "chapter_title",
+    "part_title",
+    "source_file",
+})
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -97,6 +111,21 @@ def _event_id(event_type: str, book_id: str, ts: str) -> str:
     """Deterministic-ish short ID from content hash."""
     raw = f"{event_type}:{book_id}:{ts}:{uuid.uuid4()}"
     return "evt_" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _anon_token(value: str) -> str:
+    raw = f"{_ANON_SALT}:{value}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _redact_value(key: str, value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _redact_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(key, item) for item in value]
+    if isinstance(value, str) and key in _SENSITIVE_KEYS:
+        return {"sha16": _anon_token(value), "chars": len(value)}
+    return value
 
 
 def _classify(
@@ -159,23 +188,31 @@ def record_feedback_event(
     ts = _utcnow()
     learning_target, value_score, eligible, requires_review = _classify(event_type)
 
+    redacted_before = _redact_value("before", before) if ANONYMIZE_FEEDBACK else before
+    redacted_after = _redact_value("after", after) if ANONYMIZE_FEEDBACK else after
+    masked_user_id = f"user_{_anon_token(user_id)}" if (ANONYMIZE_FEEDBACK and user_id) else user_id
+    masked_session_id = f"session_{_anon_token(session_id)}" if (ANONYMIZE_FEEDBACK and session_id) else session_id
+    public_book_id = f"book_{_anon_token(book_id)}" if ANONYMIZE_FEEDBACK else book_id
+
     event: dict[str, Any] = {
         "event_id":              _event_id(event_type, book_id, ts),
         "event_type":            event_type,
-        "book_id":               book_id,
+        "book_id":               public_book_id,
+        "book_token":            f"book_{_anon_token(book_id)}",
         "structure_version":     structure_version,
         "algorithm_name":        algorithm_name,
         "algorithm_version":     algorithm_version,
-        "before":                before,
-        "after":                 after,
+        "before":                redacted_before,
+        "after":                 redacted_after,
         "confidence":            confidence,
         "learning_target":       learning_target,
         "value_score":           value_score,
         "eligible_for_learning": eligible,
         "requires_review":       requires_review,
         "timestamp":             ts,
-        "user_id":               user_id,
-        "session_id":            session_id,
+        "user_id":               masked_user_id,
+        "session_id":            masked_session_id,
+        "anonymized":            ANONYMIZE_FEEDBACK,
     }
     _persist(book_id, event)
     return event

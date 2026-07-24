@@ -788,6 +788,17 @@ def save_speaker_override(book: str, line_id: str, character: str,
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(overrides, f, indent=2)
     os.replace(tmp, path)
+
+    structure = load_structure(book)
+    record_feedback_event(
+        event_type="speaker_attribution_fixed",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="speaker_attribution",
+        algorithm_version="tier2",
+        before={"line_id": line_id, "scene_id": scene_id},
+        after={"line_id": line_id, "scene_id": scene_id, "character": character or None},
+    )
     return {"overrides": len(overrides), "line_id": line_id, "character": character or None}
 
 
@@ -1089,4 +1100,3 @@ def resolve_audio(rel_path: str) -> Optional[str]:
         if abs_path.startswith(os.path.abspath(allowed) + os.sep):
             return abs_path if os.path.exists(abs_path) else None
     return None
-

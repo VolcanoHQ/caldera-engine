@@ -11,6 +11,7 @@ import re
 import sys
 import json
 import time
+import hashlib
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,6 +71,36 @@ root_logger.addHandler(deque_handler)
 logger = logging.getLogger("StudioServer")
 
 TIER1_GUI_PIPELINE = "tier1_manifest_v1"
+
+
+def _feedback_hash(value: str) -> str:
+    if value is None:
+        value = ""
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _feedback_book_token(filename: str, tier: int) -> str:
+    stem = os.path.splitext(filename or "")[0].strip().lower()
+    return f"book_{_feedback_hash(f'{stem}|tier:{tier}')}"
+
+
+def _anonymized_line_payload(line: dict, *, filename: str, tier: int, line_id: str) -> dict:
+    raw_text = str(line.get("text") or line.get("dialogue") or "")
+    narr_before = str(line.get("narration_before") or "")
+    narr_after = str(line.get("narration_after") or "")
+    return {
+        "line_id": line_id,
+        "book_token": _feedback_book_token(filename, tier),
+        "tier": tier,
+        "character": line.get("character"),
+        "text_sha16": _feedback_hash(raw_text),
+        "text_chars": len(raw_text),
+        "narration_before_sha16": _feedback_hash(narr_before),
+        "narration_after_sha16": _feedback_hash(narr_after),
+        "emotion": line.get("emotion"),
+        "attribution_method": line.get("attribution_method"),
+        "anonymized": True,
+    }
 
 
 def _manifest_to_gui_hierarchy(manifest):
@@ -1830,7 +1861,11 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 for item in feedback_data:
-                    if item.get("line_id") == line_id:
+                    if (
+                        item.get("line_id") == line_id
+                        and item.get("book_token") == _feedback_book_token(filename, tier)
+                        and item.get("tier") == tier
+                    ):
                         item["character"] = new_speaker
                         break
                 with open(feedback_file, "w", encoding="utf-8") as f:
@@ -1930,25 +1965,20 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     feedback_data = []
                     
             # Check if line already exists in feedback dataset
+            book_token = _feedback_book_token(filename, tier)
             existing_idx = -1
             for idx, item in enumerate(feedback_data):
-                if item.get("line_id") == line_id:
+                if item.get("line_id") == line_id and item.get("book_token") == book_token and item.get("tier") == tier:
                     existing_idx = idx
                     break
                     
             if verified:
-                payload = {
-                    "line_id": line_id,
-                    "filename": filename,
-                    "tier": tier,
-                    "character": target_line.get("character"),
-                    "text": target_line.get("text"),
-                    "dialogue": target_line.get("dialogue"),
-                    "narration_before": target_line.get("narration_before", ""),
-                    "narration_after": target_line.get("narration_after", ""),
-                    "emotion": target_line.get("emotion"),
-                    "attribution_method": target_line.get("attribution_method")
-                }
+                payload = _anonymized_line_payload(
+                    target_line,
+                    filename=filename,
+                    tier=tier,
+                    line_id=line_id,
+                )
                 if existing_idx >= 0:
                     feedback_data[existing_idx] = payload
                 else:
@@ -2028,9 +2058,15 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     feedback_data = []
                     
             # Check if this aspect verification already exists in feedback dataset
+            book_token = _feedback_book_token(filename, tier)
             existing_idx = -1
             for idx, item in enumerate(feedback_data):
-                if item.get("type") == "aspect_verification" and item.get("filename") == filename and item.get("tier") == tier and item.get("aspect") == aspect:
+                if (
+                    item.get("type") == "aspect_verification"
+                    and item.get("book_token") == book_token
+                    and item.get("tier") == tier
+                    and item.get("aspect") == aspect
+                ):
                     existing_idx = idx
                     break
                     
@@ -2038,14 +2074,15 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 # Capture structural parameters for training
                 aspect_details = {
                     "type": "aspect_verification",
-                    "filename": filename,
+                    "book_token": book_token,
                     "tier": tier,
                     "aspect": aspect,
                     "verified": True,
+                    "anonymized": True,
                     "metadata": {
                         "total_chapters": hierarchy_data["metadata"].get("total_chapters"),
                         "total_scenes": hierarchy_data["metadata"].get("total_scenes"),
-                        "global_characters": hierarchy_data["metadata"].get("global_characters")
+                        "global_character_count": len(hierarchy_data["metadata"].get("global_characters", []))
                     }
                 }
                 
@@ -2058,7 +2095,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                                 scenes_structure.append({
                                     "scene_id": scene.get("scene_id"),
                                     "scene_number": scene.get("scene_number"),
-                                    "first_line": scene.get("lines")[0].get("text") if scene.get("lines") else ""
+                                    "first_line_sha16": _feedback_hash(scene.get("lines")[0].get("text", "")) if scene.get("lines") else None,
+                                    "first_line_chars": len(scene.get("lines")[0].get("text", "")) if scene.get("lines") else 0,
                                 })
                     aspect_details["scenes_structure"] = scenes_structure
                 elif aspect == "chapter_splitting":
@@ -2072,7 +2110,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                             })
                     aspect_details["chapters_structure"] = chapters_structure
                 elif aspect == "character_classification":
-                    aspect_details["characters"] = hierarchy_data["metadata"].get("global_characters", [])
+                    aspect_details["character_count"] = len(hierarchy_data["metadata"].get("global_characters", []))
                     
                 if existing_idx >= 0:
                     feedback_data[existing_idx] = aspect_details
@@ -2148,9 +2186,14 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             
             # Keep non-line items or items from other books/tiers intact
             other_feedback_items = []
+            book_token = _feedback_book_token(filename, tier)
             for item in feedback_data:
-                # Keep if it is a different book or tier, or not a line feedback
-                if "line_id" not in item or item.get("filename") != filename or item.get("tier") != tier:
+                # Keep if it is a different book/tier token, or not a line feedback
+                if (
+                    "line_id" not in item
+                    or item.get("book_token") != book_token
+                    or item.get("tier") != tier
+                ):
                     other_feedback_items.append(item)
             
             # Scan current hierarchy for verified lines
@@ -2161,18 +2204,12 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         for line in scene.get("lines", []):
                             if line.get("verified"):
                                 line_id = line.get("line_id")
-                                payload = {
-                                    "line_id": line_id,
-                                    "filename": filename,
-                                    "tier": tier,
-                                    "character": line.get("character"),
-                                    "text": line.get("text"),
-                                    "dialogue": line.get("dialogue"),
-                                    "narration_before": line.get("narration_before", ""),
-                                    "narration_after": line.get("narration_after", ""),
-                                    "emotion": line.get("emotion"),
-                                    "attribution_method": line.get("attribution_method")
-                                }
+                                payload = _anonymized_line_payload(
+                                    line,
+                                    filename=filename,
+                                    tier=tier,
+                                    line_id=line_id,
+                                )
                                 new_feedback_lines.append(payload)
             
             final_feedback_data = other_feedback_items + new_feedback_lines
