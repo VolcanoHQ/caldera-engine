@@ -1357,7 +1357,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 
             response_data = {
                 "profile": profile_data,
-                "hierarchy": hierarchy_data
+                "hierarchy": hierarchy_data,
+                "active_tier": int(tier),
             }
             
             response = json.dumps(response_data).encode("utf-8")
@@ -1386,7 +1387,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
             # Analyze immediately through the canonical upload contract/Tier 1 path.
             profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
-            hierarchy_data = build_gui_hierarchy(filepath, 1)
+            hierarchy_data = build_gui_hierarchy(filepath, int(tier))
             profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
             
             # Save cache
@@ -1406,6 +1407,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             response_data = success_response(result)
             response_data["profile"] = profile_data
             response_data["hierarchy"] = hierarchy_data
+            response_data["active_tier"] = int(tier)
             
             response = json.dumps(response_data).encode("utf-8")
             self.send_response(200)

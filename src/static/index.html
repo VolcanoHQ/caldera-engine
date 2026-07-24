@@ -76,6 +76,7 @@
                     </strong> ${failing.length ? "— " + failing.map(c => `${esc(c.check)} (${esc(c.status)})`).join(", ") : "— all key dependencies found."}`;
                 }
             }
+            renderTierViewSwitcher();
         }
 
         async function refreshEnvironmentPreflight() {
@@ -108,6 +109,64 @@
             } catch (err) {
                 console.error("Tier readiness failed:", err);
             }
+        }
+
+        // ── Tier selection helpers ──────────────────────────────────────────────
+
+        // Highlights the selected tier card in the upload modal.
+        function selectUploadTier(n) {
+            [1, 2, 3].forEach(t => {
+                const card = document.getElementById(`uploadTierCard${t}`);
+                if (!card) return;
+                if (t === n) {
+                    card.style.borderColor = "var(--accent-teal)";
+                    card.style.background = "rgba(20,184,166,0.08)";
+                } else {
+                    card.style.borderColor = "var(--border-color)";
+                    card.style.background = "rgba(255,255,255,0.01)";
+                }
+            });
+            const radio = document.querySelector(`input[name="uploadModalTier"][value="${n}"]`);
+            if (radio) radio.checked = true;
+        }
+
+        // Syncs Project Setup productionTier radios with a given tier value.
+        function syncProductionTierRadio(tier) {
+            const radio = document.querySelector(`input[name="productionTier"][value="${tier}"]`);
+            if (radio) radio.checked = true;
+            currentActiveTier = parseInt(tier, 10) || 1;
+            renderTierViewSwitcher();
+        }
+
+        // Re-analyzes the current book at a different tier view.
+        async function switchViewTier(tier) {
+            const book = selectedBookName();
+            if (!book) return;
+            syncProductionTierRadio(tier);
+            await loadBookFromDropdown();
+        }
+
+        // Renders the tier view switcher buttons in the Macro tab.
+        function renderTierViewSwitcher() {
+            const container = document.getElementById("macroTierViewSwitcher");
+            if (!container) return;
+            const tiers = [
+                { n: 1, label: "Tier 1 — Solo Narrator" },
+                { n: 2, label: "Tier 2 — Multi-Voice Cast" },
+                { n: 3, label: "Tier 3 — Audio Drama" },
+            ];
+            container.innerHTML = tiers.map(({ n, label }) => {
+                const isActive = n === currentActiveTier;
+                const ready = currentTierReadiness && currentTierReadiness[`tier${n}`]?.ready;
+                const dot = ready ? "●" : "○";
+                const dotColor = ready ? "var(--accent-teal)" : "var(--text-dark)";
+                const bg = isActive ? "rgba(139,92,246,0.18)" : "rgba(255,255,255,0.02)";
+                const border = isActive ? "var(--accent-violet)" : "var(--border-color)";
+                const color = isActive ? "var(--text-main)" : "var(--text-muted)";
+                return `<button onclick="switchViewTier(${n})" style="flex:1; min-width:140px; background:${bg}; border:1px solid ${border}; color:${color}; border-radius:var(--radius-sm); padding:10px 14px; font-size:12.5px; font-weight:${isActive ? '700' : '500'}; cursor:pointer; transition:all 0.2s ease; text-align:left; display:flex; align-items:center; gap:8px;">
+                    <span style="color:${dotColor}; font-size:10px;">${dot}</span>${esc(label)}
+                </button>`;
+            }).join("");
         }
 
         async function normalizeChapterTitles() {
@@ -1047,7 +1106,7 @@
                                     <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">A single voice actor reads the entire book (prose and dialogue).</div>
                                 </div>
                             </label>
-                            <label style="display: none; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                            <label style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
                                 <input type="radio" name="productionTier" value="2" style="margin-top: 4px;" onchange="loadBookFromDropdown()">
                                 <div>
                                     <div style="font-weight: 600; font-size: 15px;">Tier 2: Multi-Voice Cast</div>
@@ -1055,7 +1114,7 @@
                                     <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">Narrator reads prose; distinct actors are assigned to specific characters.</div>
                                 </div>
                             </label>
-                            <label style="display: none; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
+                            <label style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
                                 <input type="radio" name="productionTier" value="3" style="margin-top: 4px;" onchange="loadBookFromDropdown()">
                                 <div>
                                     <div style="font-weight: 600; font-size: 15px;">Tier 3: Audio Drama</div>
@@ -1132,6 +1191,15 @@
                                 </button>
                             </div>
                         </div>
+
+                        <!-- Director's Dashboard Tier View Switcher -->
+                        <div>
+                            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dark); font-weight: 700; margin-bottom: 8px;">View as Processing Tier</div>
+                            <div id="macroTierViewSwitcher" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <span style="color: var(--text-dark); font-size: 12px;">Select a manuscript to enable tier switching.</span>
+                            </div>
+                        </div>
+
                         <div id="macroTierReadiness" style="font-size: 13px; color: var(--text-muted);">Select and analyze a manuscript to show tier readiness.</div>
                         <div id="macroPreflightReadiness" style="font-size: 13px; color: var(--text-muted);">Runtime preflight status not loaded yet.</div>
                     </div>
@@ -1400,12 +1468,47 @@
     <!-- Modals -->
     <!-- Custom Paste Upload Modal -->
     <div class="modal" id="uploadModal">
-        <div class="modal-content" style="max-width: 800px; width: 90%;">
+        <div class="modal-content" style="max-width: 860px; width: 90%;">
             <div class="modal-header">
                 <h2>Ingest Manuscript</h2>
                 <button class="btn-close" onclick="closeUploadModal()">&times;</button>
             </div>
-            <div style="display: flex; gap: 24px; margin-top: 16px; flex-wrap: wrap;">
+
+            <!-- Step 1: Tier selector -->
+            <div style="margin: 20px 0 0 0;">
+                <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 700; margin-bottom: 10px;">Step 1 — Choose Processing Tier</div>
+                <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                    <label id="uploadTierCard1" onclick="selectUploadTier(1)" style="flex:1; min-width:160px; display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid var(--accent-teal); background:rgba(20,184,166,0.08); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                        <input type="radio" name="uploadModalTier" value="1" checked style="display:none;">
+                        <div>
+                            <div style="font-weight:700; font-size:13.5px; color:var(--text-main);">Tier 1 — Solo Narrator</div>
+                            <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">Manuscript ingestion &amp; chapter structure analysis</div>
+                        </div>
+                    </label>
+                    <label id="uploadTierCard2" onclick="selectUploadTier(2)" style="flex:1; min-width:160px; display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid var(--border-color); background:rgba(255,255,255,0.01); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                        <input type="radio" name="uploadModalTier" value="2" style="display:none;">
+                        <div>
+                            <div style="font-weight:700; font-size:13.5px; color:var(--text-main);">Tier 2 — Multi-Voice Cast</div>
+                            <div style="font-size:11.5px; color:var(--accent-violet); margin-top:2px; font-weight:600;">★ Recommended for novels</div>
+                            <div style="font-size:11.5px; color:var(--text-muted); margin-top:2px;">Character attribution, scene &amp; narration analysis</div>
+                        </div>
+                    </label>
+                    <label id="uploadTierCard3" onclick="selectUploadTier(3)" style="flex:1; min-width:160px; display:flex; align-items:flex-start; gap:10px; padding:12px 14px; border:1px solid var(--border-color); background:rgba(255,255,255,0.01); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                        <input type="radio" name="uploadModalTier" value="3" style="display:none;">
+                        <div>
+                            <div style="font-weight:700; font-size:13.5px; color:var(--text-main);">Tier 3 — Audio Drama</div>
+                            <div style="font-size:11.5px; color:var(--text-muted); margin-top:3px;">Full production: cast, soundscapes &amp; scored music</div>
+                        </div>
+                    </label>
+                </div>
+                <div style="font-size:11px; color:var(--text-dark); margin-top:6px;">⚡ Preview audio is not generated during ingest. Request it later from the Director's Dashboard.</div>
+            </div>
+
+            <div style="margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 18px;">
+                <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); font-weight: 700; margin-bottom: 12px;">Step 2 — Upload or Paste Manuscript</div>
+            </div>
+
+            <div style="display: flex; gap: 24px; flex-wrap: wrap;">
                 <!-- Left side: File drag-and-drop -->
                 <div id="dropZone" style="flex: 1; min-width: 280px; border: 2px dashed var(--border-color); border-radius: var(--radius-md); padding: 40px 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(255,255,255,0.01); cursor: pointer; transition: all 0.2s ease;"
                     ondragover="event.preventDefault(); this.style.borderColor='var(--accent-teal)'; this.style.background='rgba(20,184,166,0.05)';" ondragleave="this.style.borderColor='var(--border-color)'; this.style.background='rgba(255,255,255,0.01)';"
@@ -1596,6 +1699,7 @@
         let currentProfile = null;
         let currentTierReadiness = null;
         let currentPreflight = null;
+        let currentActiveTier = 1;
 
         // Tab Slicer state
         let activeSlicerChapter = null;
@@ -1682,8 +1786,13 @@
                 const data = await response.json();
                 currentProfile = data.profile;
                 currentHierarchy = data.hierarchy;
-
-                // Load views
+                if (data.active_tier) {
+                    currentActiveTier = data.active_tier;
+                    renderTierViewSwitcher();
+                } else {
+                    currentActiveTier = parseInt(selectedTier, 10) || 1;
+                    renderTierViewSwitcher();
+                }
                 renderDashboard(currentProfile);
                 renderTree(currentHierarchy);
                 renderSpeakerVerificationCard(currentHierarchy);
@@ -3992,8 +4101,8 @@
                 return;
             }
 
-            const selectedTierEl = document.querySelector('input[name="productionTier"]:checked');
-            const selectedTier = selectedTierEl ? selectedTierEl.value : "1";
+            const modalTierEl = document.querySelector('input[name="uploadModalTier"]:checked');
+            const selectedTier = modalTierEl ? modalTierEl.value : "1";
 
             closeUploadModal();
             showLoading("Analyzing Story...", `Ingesting ${filename} - Extracting sections, coreference resolution, and mood metrics...`);
@@ -4019,6 +4128,9 @@
                 const data = await response.json();
                 currentProfile = data.profile;
                 currentHierarchy = data.hierarchy;
+                if (data.active_tier) {
+                    syncProductionTierRadio(data.active_tier);
+                }
 
                 renderDashboard(currentProfile);
                 renderTree(currentHierarchy);
@@ -4065,8 +4177,8 @@
             const file = input.files[0];
             if (!file) return;
 
-            const selectedTierEl = document.querySelector('input[name="productionTier"]:checked');
-            const selectedTier = selectedTierEl ? selectedTierEl.value : "1";
+            const modalTierEl = document.querySelector('input[name="uploadModalTier"]:checked');
+            const selectedTier = modalTierEl ? modalTierEl.value : "1";
 
             const reader = new FileReader();
             reader.onload = async function(e) {
@@ -4098,6 +4210,9 @@
                     const data = await response.json();
                     currentProfile = data.profile;
                     currentHierarchy = data.hierarchy;
+                    if (data.active_tier) {
+                        syncProductionTierRadio(data.active_tier);
+                    }
 
                     renderDashboard(currentProfile);
                     renderTree(currentHierarchy);
