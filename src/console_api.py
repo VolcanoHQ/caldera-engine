@@ -30,6 +30,7 @@ from src.book_structure import (
     save_book_structure,
     split_section,
 )
+from src.feedback_events import event_type_for_operation, record_feedback_event
 from src.book_structure_adapter import (
     chapter_lookup,
     load_line_payloads as adapter_load_line_payloads,
@@ -408,6 +409,24 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
     if not book:
         return None
     structure = load_structure(book)
+
+    # Capture before state for feedback intelligence
+    primary_section_id = (
+        payload.get("section_id")
+        or (payload.get("section_ids") or [None])[0]
+    )
+    before_section = next(
+        (s for s in structure.sections if s.section_id == primary_section_id),
+        None,
+    )
+    before_content_type = before_section.content_type if before_section else "unknown"
+    before_snapshot     = before_section.model_dump() if before_section else {}
+    before_version      = structure.structure_version
+    before_confidence   = (
+        (before_section.metadata or {}).get("boundary_v2", {}).get("confidence")
+        if before_section else None
+    )
+
     if action == "rename_section":
         updated = rename_section(structure, payload.get("section_id", ""), str(payload.get("title", "")))
     elif action == "reorder_section":
@@ -431,6 +450,25 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
 
     save_book_structure(updated, _book_structure_path(book))
     invalidated = _invalidate_downstream_artifacts(book)
+
+    # Emit feedback event for learning intelligence
+    after_section = next(
+        (s for s in updated.sections if s.section_id == primary_section_id),
+        None,
+    )
+    evt_type = event_type_for_operation(action, before_content_type)
+    record_feedback_event(
+        event_type=evt_type,
+        book_id=book,
+        structure_version=before_version,
+        algorithm_name="canonical_structure",
+        algorithm_version="scene_v2",
+        before=before_snapshot,
+        after=(after_section.model_dump() if after_section
+               else {"action": action, "payload": payload}),
+        confidence=before_confidence,
+    )
+
     return {
         "book": book,
         "action": action,
@@ -438,7 +476,6 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
         "readiness": structure_readiness(updated, require_analysis=True),
         "invalidated": invalidated,
     }
-
 
 def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
     book = _safe_book(book)
@@ -1052,3 +1089,4 @@ def resolve_audio(rel_path: str) -> Optional[str]:
         if abs_path.startswith(os.path.abspath(allowed) + os.sep):
             return abs_path if os.path.exists(abs_path) else None
     return None
+

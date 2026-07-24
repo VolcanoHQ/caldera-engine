@@ -269,6 +269,13 @@ def migrate_tier1_artifacts(
                 "boundary_source": scene.get("boundary_source", "unknown"),
                 "text_block": text_block,
             }
+            # Carry v2 boundary intelligence when present
+            if scene.get("detector_version"):
+                metadata["boundary_v2"] = {
+                    "confidence":       scene.get("confidence"),
+                    "reasons":          scene.get("reasons", []),
+                    "detector_version": scene.get("detector_version"),
+                }
             sections.append(BookSection(
                 section_id=_legacy_section_id(legacy_id),
                 parent_id=_legacy_section_id(parent_legacy) if parent_legacy else None,
@@ -562,3 +569,4 @@ def _mark_approval_stale(section: BookSection) -> None:
     section.approval.approved_by = None
     section.approval.approved_at = None
     section.approval.approved_structure_version = None
+
