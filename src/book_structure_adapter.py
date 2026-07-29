@@ -230,6 +230,7 @@ def structure_to_manifest(
     line_payloads: list[dict[str, Any]] | None = None,
 ) -> ManuscriptManifest:
     line_index = _line_index(line_payloads or [])
+    consumed: set[str] = set()
     part_payloads: list[PartPayload] = []
     total_scenes = 0
 
@@ -238,7 +239,7 @@ def structure_to_manifest(
         for chapter in ordered_chapters(structure, part):
             scene_payloads: list[ScenePayload] = []
             for scene in ordered_scenes(structure, chapter):
-                lines = [ScriptLine.model_validate(line) for line in _line_dicts_for_section(structure, scene, line_index)]
+                lines = [ScriptLine.model_validate(line) for line in _line_dicts_for_section(structure, scene, line_index, consumed)]
                 scene_payloads.append(ScenePayload(scene_id=_section_key(scene), lines=lines))
                 total_scenes += 1
             chapter_payloads.append(ChapterPayload(
@@ -251,6 +252,26 @@ def structure_to_manifest(
             title=part.title,
             chapters=chapter_payloads,
         ))
+
+    # Fail loud on orphaned scenes: any line payload whose scene the structure
+    # never referenced would otherwise be dropped SILENTLY -- the bug that made a
+    # 7-scene Peter Rabbit render as 3 scenes / 25 of 42 lines. Slicing is
+    # authoritative; if the line payloads carry scenes the structure doesn't know
+    # about, the two artifacts disagree and the caller must reconcile (rebuild the
+    # structure from the current slice) rather than ship a partial book.
+    orphaned = {
+        sid: len(lines)
+        for sid, lines in line_index.items()
+        if sid and lines and sid not in consumed
+    }
+    if orphaned:
+        preview = ", ".join(f"{sid} ({n} lines)" for sid, n in list(orphaned.items())[:6])
+        raise ValueError(
+            f"structure_to_manifest: {len(orphaned)} line-payload scene(s) are absent from the "
+            f"canonical structure and would be dropped ({sum(orphaned.values())} lines total): "
+            f"{preview}. The structure's scene slicing is stale relative to the line payloads "
+            f"(rebuild the structure from the current slice before rendering)."
+        )
 
     return ManuscriptManifest(
         source_file=os.path.basename(structure.source_file),
@@ -405,11 +426,16 @@ def _line_dicts_for_section(
     structure: BookStructure,
     section: BookSection,
     line_index: dict[str, list[dict[str, Any]]],
+    _consumed: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     key = _section_key(section)
     if key in line_index:
+        if _consumed is not None:
+            _consumed.add(key)
         return [_line_for_gui(line, key) for line in line_index[key]]
     if section.section_id in line_index:
+        if _consumed is not None:
+            _consumed.add(section.section_id)
         return [_line_for_gui(line, key) for line in line_index[section.section_id]]
     if section.text_ref.source_section_ids:
         merged: list[dict[str, Any]] = []
@@ -417,7 +443,7 @@ def _line_dicts_for_section(
         for source_id in section.text_ref.source_section_ids:
             source = lookup.get(source_id)
             if source:
-                merged.extend(_line_dicts_for_section(structure, source, line_index))
+                merged.extend(_line_dicts_for_section(structure, source, line_index, _consumed))
         return merged
     return []
 

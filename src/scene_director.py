@@ -33,6 +33,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.book_structure_adapter import load_structure, require_structure_readiness, scene_text_map
 from src.models import ManuscriptManifest
 from src.llm_client import query_llm_json
+from src.emotion_pass import EMOTION_KEYS
+from src.expression_profile import SUGGESTED_EXPRESSION_STYLES, canonicalize_expression_profile
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SceneDirector")
@@ -750,6 +752,31 @@ class CharacterProfile(BaseModel):
     visual_description: str = Field(..., description="Concise paintable description: species/build, age, attire, distinguishing features")
     evidence_snippets: List[str] = Field(default_factory=list, description="Verbatim text snippets supporting the description")
     inferred: bool = Field(default=False, description="True when the text gives no explicit description and this is period/genre-consistent invention")
+    emotion_expression_profile: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "How this character *expresses* an emotion once they feel it, keyed by emotion ("
+            + ", ".join(k for k in EMOTION_KEYS if k != "neutral")
+            + "). Values are styles from: " + ", ".join(SUGGESTED_EXPRESSION_STYLES) + ". "
+            "This shapes vocal delivery only -- it never changes which emotion a line is classified as."
+        ),
+    )
+
+    @field_validator("emotion_expression_profile", mode="before")
+    @classmethod
+    def _coerce_expression_profile(cls, value: Any) -> Dict[str, str]:
+        """Never let a malformed profile from one character fail validation for
+        the whole cast: coerce anything that is not a flat dict of strings into a
+        safe {str: str} shape (semantic validation happens later via
+        canonicalize_expression_profile). Non-dicts become {}."""
+        if not isinstance(value, dict):
+            return {}
+        coerced: Dict[str, str] = {}
+        for key, val in value.items():
+            if val is None:
+                continue
+            coerced[str(key)] = val if isinstance(val, str) else str(val)
+        return coerced
 
 
 class CharacterDesignSchema(BaseModel):
@@ -820,10 +847,18 @@ draws them CONSISTENTLY in every scene.
 CHARACTERS (with text mentions):
 {mention_block}
 
+Also read how each character EXPRESSES emotion from how they act and speak across
+their mentions -- e.g. a stoic detective expresses anger as "restrained", a
+blustering villain as "explosive". This tunes vocal delivery only; it does NOT
+decide which emotion a line carries.
+
 Return JSON: {{"profiles": [{{"name", "visual_description" (species/build, age, attire,
 distinguishing features -- one dense sentence), "evidence_snippets" (VERBATIM text
 fragments that support details, empty if none), "inferred" (true when the text never
-describes them and you invented a period/genre-consistent look)}}]}}
+describes them and you invented a period/genre-consistent look),
+"emotion_expression_profile" (object mapping any of [{", ".join(k for k in EMOTION_KEYS if k != "neutral")}]
+to EXACTLY ONE style from [{", ".join(SUGGESTED_EXPRESSION_STYLES)}];
+include only emotions the text actually reveals for them, {{}} if none)}}]}}
 Ground what you can; invent the rest deliberately and mark it inferred."""
     try:
         res, provider = query_llm_json(prompt, schema=CharacterDesignSchema, task_name="tier3_character_design", allowed_providers=("gemini", "groq"))
@@ -847,11 +882,16 @@ Ground what you can; invent the rest deliberately and mark it inferred."""
         # A mention isn't a description: inferred=False requires evidence that
         # actually carries visual information (attire, color, build).
         visual_evidence = [s for s in grounded if any(w in s.lower() for w in _VISUAL_WORDS)]
+        # Semantic hardening: fold emotion keys onto the detector vocabulary,
+        # validate/alias styles, and drop hallucinated emotions or unknown styles
+        # so only actionable entries are stored.
+        expression_profile = canonicalize_expression_profile(p.emotion_expression_profile)
         profiles.append({
             "name": p.name,
             "visual_description": p.visual_description[:300],
             "evidence_snippets": visual_evidence or grounded,
             "inferred": p.inferred or not visual_evidence,
+            "emotion_expression_profile": expression_profile,
             "designed_by": provider,
         })
     return profiles

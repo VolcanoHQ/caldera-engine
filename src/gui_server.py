@@ -243,62 +243,79 @@ PIPELINE_STATUS = {
 
 def bg_run_pipeline(filename: str, tier: int = 1, user_tier: str = "free"):
     """
-    Executes the CalderaPipeline full run on a background thread.
-    Updates the global PIPELINE_STATUS object for real-time progress polling.
+    Drive a render through the canonical render_job worker (the same path the
+    Review Console uses) and mirror its state into PIPELINE_STATUS so the
+    existing /api/pipeline_status polling UI keeps working unchanged.
+
+    The heavy synthesis/mix runs in render_job's DETACHED worker process; this
+    background thread only tracks the job file + progress ticks. This is what
+    makes the primary upload flow consume the same performance_script.json
+    (attribution reduction + emotion pass + character-aware delivery) as the
+    Console render path, instead of the legacy CalderaPipeline/tts_compiler lane.
     """
     global PIPELINE_STATUS
+    import time as _time
+    from src import render_job, progress
     try:
-        from src.main import CalderaPipeline
-        filepath = resolve_manuscript_path(filename)
-        if not filepath:
-            raise FileNotFoundError(f"Manuscript not found: {filename}")
-        
-        logger.info(f"[BG Compiler] Initializing pipeline run for {filename} (Tier {tier}, User Tier {user_tier})...")
-        PIPELINE_STATUS["status"] = "running"
-        PIPELINE_STATUS["step"] = "Preparing workspace & loading character drawers..."
-        PIPELINE_STATUS["progress"] = 15
-        
-        pipeline = CalderaPipeline(production_tier=tier)
-        
-        logger.info("[BG Compiler] Ingesting and parsing script lines...")
-        PIPELINE_STATUS["step"] = "Running manuscript text parsing & LLM dialogue attribution..."
-        PIPELINE_STATUS["progress"] = 40
-        
-        logger.info("[BG Compiler] Initiating speech synthesis and track mixing...")
-        PIPELINE_STATUS["step"] = "Synthesizing voice lines and compiling ambient sidechain filters..."
-        PIPELINE_STATUS["progress"] = 75
-        
-        output_master = "scratch/pipeline_workspace/output_master.wav"
-        success = pipeline.run_full_pipeline(filepath, output_master, user_tier=user_tier)
-        
-        if success:
-            logger.info("[BG Compiler] Performing mathematical ACX compliant QC check...")
-            PIPELINE_STATUS["step"] = "Analyzing master peak and RMS loudness metrics..."
-            PIPELINE_STATUS["progress"] = 95
-            
-            qc_report = {}
-            qc_report_path = "scratch/master_qc_report.json"
-            if os.path.exists(qc_report_path):
-                with open(qc_report_path, "r", encoding="utf-8") as f:
-                    qc_report = json.load(f)
-                    
-            PIPELINE_STATUS["status"] = "completed"
-            PIPELINE_STATUS["progress"] = 100
-            PIPELINE_STATUS["step"] = "Audiobook compiled successfully! ACX QC check passed."
-            PIPELINE_STATUS["qc_report"] = qc_report
-            logger.info("[BG Compiler] Pipeline successfully finished!")
-        else:
-            logger.error("[BG Compiler] physical mastering QC check failed.")
-            PIPELINE_STATUS["status"] = "failed"
-            PIPELINE_STATUS["progress"] = 100
-            PIPELINE_STATUS["step"] = "Compilation failed: mastering QC limit checks failed."
-            PIPELINE_STATUS["error"] = "Audio mastering QC checks failed. Physical waves exceed standard ACX limits."
+        book = os.path.splitext(os.path.basename(filename))[0]
+        logger.info(f"[BG Compiler] Queuing render for '{book}' (Tier {tier}, user tier {user_tier})...")
+        PIPELINE_STATUS.update({
+            "status": "running", "progress": 5,
+            "step": "Queuing render job...", "error": None, "qc_report": None,
+        })
+
+        job = render_job.start_render(book, int(tier), owner="local")
+        if job.get("status") == "failed":
+            err = job.get("error") or "Render could not be started."
+            logger.error(f"[BG Compiler] Render start refused for '{book}': {err}")
+            PIPELINE_STATUS.update({
+                "status": "failed", "progress": 100,
+                "step": f"Compilation failed: {err}", "error": err,
+            })
+            return
+
+        job_id = job.get("job_id")
+        while True:
+            _time.sleep(1.5)
+            recs = [j for j in render_job.list_jobs(book) if j.get("job_id") == job_id]
+            rec = recs[0] if recs else {}
+            status = rec.get("status")
+
+            if status == "done":
+                PIPELINE_STATUS.update({
+                    "status": "completed", "progress": 100,
+                    "step": "Audiobook compiled successfully! ACX QC check passed.",
+                    "qc_report": rec.get("acx") or {},
+                })
+                logger.info(f"[BG Compiler] Render for '{book}' finished: {rec.get('output_wav')}")
+                return
+            if status == "failed" or not rec:
+                err = rec.get("error") if rec else "Render worker disappeared."
+                logger.error(f"[BG Compiler] Render for '{book}' failed: {err}")
+                PIPELINE_STATUS.update({
+                    "status": "failed", "progress": 100,
+                    "step": f"Compilation failed: {err}", "error": err,
+                })
+                return
+
+            # queued/running: mirror fine-grained progress into the 20..90 band
+            snap = progress.snapshot(book)
+            active = snap.get("active_stage")
+            st = (snap.get("stages") or {}).get(active or "", {})
+            pct = st.get("pct")
+            detail = st.get("detail")
+            mapped = 15 if pct is None else int(20 + 0.7 * float(pct))
+            PIPELINE_STATUS.update({
+                "status": "running",
+                "progress": max(int(PIPELINE_STATUS.get("progress") or 0), mapped),
+                "step": (f"{active}: {detail}" if active and detail else (active or "Rendering audiobook...")),
+            })
     except Exception as e:
-        logger.error(f"[BG Compiler] Pipeline crashed: {e}", exc_info=True)
-        PIPELINE_STATUS["status"] = "failed"
-        PIPELINE_STATUS["progress"] = 100
-        PIPELINE_STATUS["step"] = f"Compilation failed: {e}"
-        PIPELINE_STATUS["error"] = str(e)
+        logger.error(f"[BG Compiler] Render tracking crashed: {e}", exc_info=True)
+        PIPELINE_STATUS.update({
+            "status": "failed", "progress": 100,
+            "step": f"Compilation failed: {e}", "error": str(e),
+        })
 
 
 class StudioRequestHandler(BaseHTTPRequestHandler):
@@ -798,7 +815,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character", "/api/console/rebuild_all", "/api/console/normalize_chapters"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character", "/api/console/rebuild_all", "/api/console/normalize_chapters", "/api/console/attribution_override", "/api/console/emotion_override"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -1008,6 +1025,53 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"structure_edit error: {e}")
                     self.send_json_error(409, f"Structure edit error: {e}")
+            elif path == "/api/console/attribution_override":
+                from src import console_api
+                try:
+                    result = console_api.save_attribution_reduction_override(
+                        body.get("book", ""),
+                        body.get("scene_id", ""),
+                        body.get("line_id", ""),
+                        decision=str(body.get("decision", "")),
+                        classification=str(body.get("classification", "")),
+                        note=str(body.get("note", "")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid attribution override payload")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"attribution_override error: {e}")
+                    self.send_json_error(500, f"Attribution override error: {e}")
+            elif path == "/api/console/emotion_override":
+                from src import console_api
+                try:
+                    result = console_api.save_emotion_override(
+                        body.get("book", ""),
+                        body.get("scene_id", ""),
+                        body.get("line_id", ""),
+                        emotion=str(body.get("emotion", "")),
+                        note=str(body.get("note", "")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid emotion override payload")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"emotion_override error: {e}")
+                    self.send_json_error(500, f"Emotion override error: {e}")
             elif path == "/api/console/structure_refresh":
                 from src import console_api
                 try:
@@ -1121,8 +1185,6 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self.handle_post_update_character()
         elif path == "/api/process_manuscript":
             self.handle_post_process_manuscript()
-        elif path == "/api/process_scenes_async":
-            self.handle_post_process_scenes_async()
         elif path == "/api/override_line_speaker":
             self.handle_post_override_line_speaker()
         elif path == "/api/verify_line":
@@ -2270,249 +2332,6 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(response)
         except Exception as e:
             logger.error(f"Error saving telemetry correction: {e}", exc_info=True)
-            self.send_json_error(500, str(e))
-
-    def handle_post_process_scenes_async(self):
-        """
-        Webserver endpoint trigger for confirmed batch processing.
-        Executes scene analysis for confirmed scenes only, using the async engine.
-        """
-        import asyncio
-        import hashlib
-        try:
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            params = json.loads(post_data.decode('utf-8'))
-            
-            filename = params.get("filename")
-            tier = params.get("tier", 1)
-            scenes = params.get("scenes") # Expect a list of dicts: [{"scene_id": "...", "text_block": "..."}]
-            global_roster = params.get("global_roster", [])
-            backend = params.get("backend", "vllm")
-            base_url = params.get("base_url")
-            
-            if not filename or not scenes:
-                self.send_json_error(400, "Missing required parameters: filename, scenes")
-                return
-                
-            if not base_url:
-                if backend == "vllm":
-                    base_url = "http://localhost:8000"
-                elif backend == "llamacpp":
-                    base_url = "http://localhost:8080"
-                else:
-                    base_url = "http://localhost:11434"
-                    
-            pass  # re is imported at module level
-            base_name = os.path.splitext(filename)[0]
-            slug = re.sub(r'[^a-zA-Z0-9_\-]', '', base_name)
-            
-            cache_dir = f"data/processed/{slug}/Tier_{tier}"
-            hierarchy_cache = os.path.join(cache_dir, "hierarchy.json")
-            
-            if not os.path.exists(hierarchy_cache):
-                self.send_json_error(404, f"Hierarchy cache not found for {filename} Tier {tier}")
-                return
-                
-            with open(hierarchy_cache, "r", encoding="utf-8") as f:
-                hierarchy_data = json.load(f)
-                
-            # Initialize MemPalace to query rules
-            from src.spatial_memory import MemPalace
-            palace = MemPalace()
-            active_rules = palace.fetch_active_rag_context_rules(filename)
-            
-            # Setup Async Inference Engine
-            from src.async_inference import AsyncInferenceEngine, batch_process_scenes
-            engine = AsyncInferenceEngine(backend=backend, base_url=base_url)
-            
-            # Run batch processing async
-            results = asyncio.run(batch_process_scenes(
-                scenes=scenes,
-                characters=global_roster,
-                engine=engine,
-                rules=active_rules
-            ))
-            
-            # Close engine client
-            asyncio.run(engine.close())
-            
-            # Helper to map performance mods based on emotion
-            def map_performance_mods(emotion: str, text: str) -> dict:
-                pitch = 1.0
-                speed = 1.0
-                style = "neutral_narrative"
-                
-                emotion_lower = emotion.lower()
-                if emotion_lower in {"sadness", "grief", "disappointment", "sad"}:
-                    pitch = 0.90
-                    speed = 0.85
-                    style = "sorrowful_whisper"
-                elif emotion_lower in {"fear", "nervousness", "panic", "tension"}:
-                    pitch = 1.15
-                    speed = 1.10
-                    style = "anxious_whisper"
-                elif emotion_lower in {"anger", "annoyance", "disapproval"}:
-                    pitch = 0.95
-                    speed = 1.05
-                    style = "furious_shout" if "!" in text else "stern_authoritative"
-                elif emotion_lower in {"joy", "excitement", "amusement", "love"}:
-                    pitch = 1.05
-                    speed = 1.02
-                    style = "expressive_joy"
-                    
-                return {
-                    "pitch_modifier": pitch,
-                    "speed_modifier": speed,
-                    "delivery_style": style
-                }
-                
-            from src.models import ScriptLine, PerformanceMetrics
-            cursor = palace.conn.cursor()
-            
-            processed_scenes_report = []
-            
-            for res in results:
-                scene_id = res["scene_id"]
-                if res["status"] == "success":
-                    lines_data = res["data"].get("lines", [])
-                    
-                    # 1. Find scene in hierarchy to get chapter and scene numbers
-                    chapter_num = 1
-                    scene_num = 1
-                    found_scene = False
-                    for part in hierarchy_data.get("parts", []):
-                        for chapter in part.get("chapters", []):
-                            for s_idx, scene in enumerate(chapter.get("scenes", [])):
-                                if scene.get("scene_id") == scene_id:
-                                    chap_match = re.search(r'_c(\d+)', chapter.get("chapter_id", ""))
-                                    if chap_match:
-                                        chapter_num = int(chap_match.group(1))
-                                    scene_match = re.search(r'_s(\d+)', scene_id)
-                                    if scene_match:
-                                        scene_num = int(scene_match.group(1))
-                                    found_scene = True
-                                    break
-                            if found_scene:
-                                break
-                        if found_scene:
-                            break
-                            
-                    # Register Chapter/Wing in SQLite relational tables
-                    wing_id = f"wing_c{chapter_num}"
-                    palace.log_wing(
-                        wing_id=wing_id,
-                        chapter_number=chapter_num,
-                        title=f"Chapter {chapter_num}"
-                    )
-                    
-                    # Validate and map LLM response lines using Pydantic
-                    validated_lines = []
-                    for idx, ld in enumerate(lines_data, 1):
-                        char_name = ld.get("character", "Narrator").strip()
-                        if char_name.lower() == "narrator":
-                            char_name = "Narrator"
-                            
-                        raw_id = f"{slug}_c{chapter_num}_s{scene_num}_l{idx}_{ld.get('text', '')[:20]}"
-                        line_id = hashlib.sha256(raw_id.encode('utf-8')).hexdigest()[:16]
-                        
-                        speaker_id = f"char_{char_name.lower().replace(' ', '_')}"
-                        if char_name == "Narrator":
-                            speaker_id = "char_narrator"
-                            
-                        perf = map_performance_mods(ld.get("emotion", "Neutral"), ld.get("text", ""))
-                        
-                        script_line = ScriptLine(
-                            line_id=line_id,
-                            chapter=chapter_num,
-                            scene=scene_num,
-                            line_number=idx,
-                            character=char_name,
-                            speaker_id=speaker_id,
-                            segment_type=ld.get("segment_type", "narrative"),
-                            text=ld.get("text", ""),
-                            emotion=ld.get("emotion", "Neutral").title(),
-                            performance=PerformanceMetrics(
-                                pitch_modifier=perf["pitch_modifier"],
-                                speed_modifier=perf["speed_modifier"],
-                                delivery_style=perf["delivery_style"]
-                            ),
-                            post_padding_ms=250,
-                            attribution_method="LLM Batch Parser",
-                            confidence=float(ld.get("confidence", 0.90)),
-                            speaker_locked=False
-                        )
-                        
-                        validated_lines.append(script_line.model_dump())
-                        
-                        # Sync line to Relational DB
-                        cursor.execute("SELECT character_name FROM drawers WHERE character_name = ?;", (char_name,))
-                        if not cursor.fetchone():
-                            palace.register_character(
-                                character_name=char_name,
-                                voice_ref_path="data/voice_references/narrator_mono.wav"
-                            )
-                        
-                        palace.log_room(
-                            room_id=line_id,
-                            wing_id=wing_id,
-                            line_number=idx,
-                            character_name=char_name,
-                            dialogue_text=ld.get("text", ""),
-                            emotion=ld.get("emotion", "Neutral").title(),
-                            confidence=float(ld.get("confidence", 0.90)),
-                            metadata={
-                                "performance": perf,
-                                "attribution_method": "LLM Batch Parser"
-                            }
-                        )
-                        
-                    # 2. Update local cache hierarchy with validated lines
-                    found_and_updated = False
-                    for part in hierarchy_data.get("parts", []):
-                        for chapter in part.get("chapters", []):
-                            for scene in chapter.get("scenes", []):
-                                if scene.get("scene_id") == scene_id:
-                                    scene["lines"] = validated_lines
-                                    found_and_updated = True
-                                    break
-                            if found_and_updated:
-                                break
-                        if found_and_updated:
-                            break
-                            
-                    processed_scenes_report.append({
-                        "scene_id": scene_id,
-                        "status": "success",
-                        "lines_count": len(validated_lines)
-                    })
-                else:
-                    processed_scenes_report.append({
-                        "scene_id": scene_id,
-                        "status": "failed",
-                        "error": res.get("error", "Unknown error occurred during batch generation.")
-                    })
-                    
-            palace.close()
-            
-            # Save updated cache hierarchy
-            with open(hierarchy_cache, "w", encoding="utf-8") as f:
-                json.dump(hierarchy_data, f, indent=4)
-                
-            response = json.dumps({
-                "status": "completed",
-                "results": processed_scenes_report
-            }).encode("utf-8")
-            
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(response)))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(response)
-            
-        except Exception as e:
-            logger.error(f"Error processing scenes async: {e}", exc_info=True)
             self.send_json_error(500, str(e))
 
     def send_json_error(self, code, message):

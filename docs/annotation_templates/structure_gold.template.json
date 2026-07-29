@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "1-structure"
+  },
+  "_instructions": "Dimension 1. Part/chapter/scene boundaries and titles. Every scene break carries a reason: time_shift, location_shift, pov_shift, explicit_separator, or narrative_transition.",
+  "parts": [
+    {
+      "part_id": "part_001",
+      "title": "",
+      "chapters": [
+        {
+          "chapter_id": "chapter_001",
+          "title": "",
+          "scenes": [
+            { "scene_id": "scene_001", "title": "Bunnies with their mother", "scene_break_reason": "explicit_separator" },
+            { "scene_id": "scene_002", "title": "",                          "scene_break_reason": "location_shift" }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "0-segmentation"
+  },
+  "_instructions": "Dimension 0. The foundation everything aligns to. One entry per line/segment with a stable line_id, its scene_id, the verbatim text, and the fine-grained gold_type. system_segment_type / system_utterance_type record the mapping onto the engine's two-value fields (dialogue|narrative, speech|vocalization) so the gold still scores.",
+  "lines": [
+    {
+      "line_id": "line_001", "scene_id": "scene_001",
+      "text": "Once upon a time there were four little Rabbits.",
+      "gold_type": "narration",
+      "system_segment_type": "narrative", "system_utterance_type": "speech"
+    },
+    {
+      "line_id": "line_002", "scene_id": "scene_001",
+      "text": "Now run along, and don't get into mischief.",
+      "gold_type": "dialogue",
+      "system_segment_type": "dialogue", "system_utterance_type": "speech"
+    }
+  ]
+}

@@ -58,6 +58,8 @@ _EVENT_CLASSIFICATION: dict[str, tuple[str, str]] = {
     # Speaker / attribution corrections
     "speaker_attribution_fixed":    ("speaker_attributor",       VALUE_CRITICAL),
     "speaker_locked":               ("speaker_attributor",       VALUE_CRITICAL),
+    "attribution_reduction_corrected": ("attribution_reduction", VALUE_CRITICAL),
+    "emotion_corrected":               ("emotion_pass",           VALUE_CRITICAL),
 
     # Content-type corrections
     "content_type_changed":         ("content_type_classifier",  VALUE_CRITICAL),

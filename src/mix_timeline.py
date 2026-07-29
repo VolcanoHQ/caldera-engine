@@ -27,6 +27,7 @@ from src.console_api import (
     _load_json, _safe_book, _tier1_dir, _tier3_dir,
     apply_speaker_overrides, load_speaker_overrides,
 )
+from src.attribution_reduction import load_performance_scene_lines
 
 logger = logging.getLogger("MixTimeline")
 
@@ -118,12 +119,13 @@ def scene_timeline(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
     if not book or not re.fullmatch(r"[A-Za-z0-9_]+", scene_id or ""):
         return None
     t1, t3 = _tier1_dir(book), _tier3_dir(book)
+    performance_lines = load_performance_scene_lines(book, scene_id)
     payload = next((p for p in (_load_json(os.path.join(t1, "loop4_lines_enriched.json")) or
                                 _load_json(os.path.join(t1, "loop4_lines.json")) or [])
                     if p.get("scene_id") == scene_id), None)
-    if payload is None:
+    if payload is None and not performance_lines:
         return None
-    lines = [dict(l) for l in payload.get("lines", [])]
+    lines = [dict(l) for l in (performance_lines or payload.get("lines", []))]
     apply_speaker_overrides(lines, load_speaker_overrides(book))
 
     from src.production_mixer import _voice_fingerprint

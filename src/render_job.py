@@ -204,6 +204,16 @@ def run_job(job_id: str) -> int:
         with open(manifest_path, "w", encoding="utf-8") as f:
             f.write(manifest.model_dump_json(indent=2))
 
+        # Build the performance script for every render, not just Tier 3. It is
+        # pure-Python (no LLM calls) and degrades to an empty baseline when no
+        # character_profiles.json exists, so Tier 1/2 narration picks up
+        # attribution reduction + the emotion pass without a separate crew run.
+        from src.attribution_reduction import build_performance_script
+        try:
+            build_performance_script(manifest_path)
+        except Exception as e:
+            logger.warning(f"Performance script build skipped for {job['book']}: {e}")
+
         out_wav = os.path.join(RENDERS_DIR, f"{job['book']}_tier{tier}.wav")
         from src import production_mixer as pm
         if tier == 3:
@@ -212,7 +222,7 @@ def run_job(job_id: str) -> int:
             result = pm.mix_voice_track(manifest_path, out_wav, single_narrator=(tier == 1))
         job.update(status="done", finished_at=time.time(),
                    output_wav=result.get("output"), output_m4b=result.get("m4b"),
-                   timings=result.get("timings"))
+                   timings=result.get("timings"), acx=result.get("acx"))
         _write_job(job)
         logger.info(f"Render job {job_id} DONE: {result.get('output')}")
         return 0

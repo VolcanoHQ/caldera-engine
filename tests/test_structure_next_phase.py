@@ -138,11 +138,12 @@ def test_render_job_uses_canonical_manifest_order(tmp_path, monkeypatch):
         return {"output": out_wav, "m4b": None, "timings": None}
 
     monkeypatch.setitem(sys.modules, "src.llm_client", types.SimpleNamespace(set_usage_context=lambda **kwargs: None))
-    monkeypatch.setitem(
-        sys.modules,
-        "src.production_mixer",
-        types.SimpleNamespace(mix_voice_track=fake_mix_voice_track, mix_production=fake_mix_voice_track),
-    )
+    # Patch the real module's attributes: render_job does `from src import
+    # production_mixer as pm`, which resolves the package attribute rather than
+    # sys.modules, so a sys.modules swap is bypassed once the module is imported.
+    import src.production_mixer as _pm
+    monkeypatch.setattr(_pm, "mix_voice_track", fake_mix_voice_track)
+    monkeypatch.setattr(_pm, "mix_production", fake_mix_voice_track)
     os.makedirs("scratch/renders", exist_ok=True)
 
     job = {
