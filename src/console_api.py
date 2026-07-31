@@ -570,6 +570,12 @@ def refresh_book_director(
     )
     performance_script_path = build_performance_script(manifest_path)
 
+    # L7: consolidate the scattered per-character signals (visual + expression +
+    # appearance index + emotional arc) into one portable profile artifact. Needs
+    # both character_profiles.json and performance_script.json, so it runs last.
+    from src.character_profile import build_character_profiles
+    consolidated_profiles_path = build_character_profiles(book)
+
     direction_result = scene_director.direct_manifest(manifest_path, sync_mempalace=sync_mempalace)
     sound_design_path = scene_director.run_sound_design(manifest_path)
     dramatization_path = scene_director.run_dramatization(manifest_path)
@@ -588,6 +594,7 @@ def refresh_book_director(
         "artifacts": {
             "manifest": manifest_path,
             "performance_script": performance_script_path,
+            "character_profiles_consolidated": consolidated_profiles_path,
             "sound_design": sound_design_path,
             "dramatization": dramatization_path,
             "character_profiles": character_profiles_path,

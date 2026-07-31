@@ -51,7 +51,7 @@ renumbered to match — see the numbering note below.
 | **L4 · Scenes by chapter** | Scene slicing (deterministic + G4) | ✅ exists (hardened) | `loop3_scenes.json`; authoritative, drop-guarded |
 | **L5 · Character by scene** | Who is present/speaking per scene; appearance index | 🟡 started | `build_appearance_index` in `character_continuity.py`; attribution in `loop4_lines_enriched.json` |
 | **L6 · Scene analysis** | Per-scene mood, tension, purpose, emotional arc | ⬜ new | boundary-v2 gives confidence/reasons only |
-| **L7 · Character analysis** | Consolidated portable character profile | 🟡 partial, scattered | `character_profiles.json` (visual+expression), continuity + per-scene emotion in `performance_script.json` |
+| **L7 · Character analysis** | Consolidated portable character profile | ✅ v1 built | `character_profile.py` → `character_profiles_consolidated.json` (assembles visual + expression + appearance index + emotional arc + voice affinity + consent) |
 | **L8 · Storyboard / timeline** | Scene-ordered production timeline / storyboard | 🟡 partial | `mix_timeline` (audio), `character_sheets`/stills (image), `production_script.json` |
 
 The performance intelligence built to date (attribution reduction → text-only emotion →
@@ -133,9 +133,9 @@ ledger (DoD F-10). A character marketplace parallels it rather than reinventing 
 
 ## Sequencing
 
-1. **L7 consolidated Character Profile** (local artifact, no sharing) — keystone; mostly
-   deterministic assembly of existing signals + the schema above. Unlocks character analysis
-   and is the entity the product needs.
+1. **L7 consolidated Character Profile** ✅ *v1 built* (`character_profile.py`, local artifact,
+   no sharing) — deterministic assembly of existing signals into the versioned schema above,
+   produced during director refresh as `character_profiles_consolidated.json`.
 2. **L6 Scene analysis** — per-scene mood/tension/purpose/arc; independent; understanding-tier.
 3. **L5 completion** — richer per-scene cast state (present vs. mentioned, entrances/exits) on
    top of the appearance index.

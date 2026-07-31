@@ -44,6 +44,54 @@ def test_simple_dialogue_redundant_attribution_removed():
     assert any(r.source_line_id == "l2" and r.action == "remove" for r in reductions)
 
 
+def test_honorific_titled_speaker_tag_is_removed():
+    """A titled speaker with a benign temporal tail -- 'said old Mrs. Rabbit one
+    morning' -- is a redundant tag between resolved dialogue and must be removed.
+    (Before: the period in 'Mrs.' broke the subject regex, so it was never seen.)"""
+    lines = [
+        _line("l1", "Mrs. Rabbit", "dialogue", '"Now my dears,"'),
+        _line("l2", "Narrator", "narrative", "said old Mrs. Rabbit one morning,"),
+        _line("l3", "Mrs. Rabbit", "dialogue", '"you may go into the fields."'),
+    ]
+    reduced, reductions = reduce_scene_lines("s1", lines)
+    assert not any(l["line_id"] == "l2" for l in reduced)
+    assert any(r.source_line_id == "l2" and r.action == "remove" for r in reductions)
+
+
+def test_staging_tail_is_preserved_not_swallowed():
+    """A manner/staging tail must land in the tail and force a keep -- it must not
+    be swallowed into the name (case-sensitive name tokens) and silently removed."""
+    lines = [
+        _line("l1", "Holmes", "dialogue", '"Come."'),
+        _line("l2", "Narrator", "narrative", "said Mr. Holmes with a grim smile."),
+    ]
+    reduced, reductions = reduce_scene_lines("s1", lines)
+    assert any(l["line_id"] == "l2" for l in reduced)          # kept, not removed
+    entry = next(r for r in reductions if r.source_line_id == "l2")
+    assert entry.action == "keep"
+    assert entry.reason == "contains_staging_or_emotion_tail"
+
+
+def test_titled_expressive_verb_becomes_delivery_metadata():
+    lines = [
+        _line("l1", "Mr. McGregor", "dialogue", '"Come here!"'),
+        _line("l2", "Narrator", "narrative", "whispered Mr. McGregor."),
+    ]
+    reduced, reductions = reduce_scene_lines("s1", lines)
+    entry = next(r for r in reductions if r.source_line_id == "l2")
+    assert entry.action == "metadata" and entry.delivery == "whisper"
+
+
+def test_ordinary_narration_with_a_title_is_not_a_false_positive():
+    """A titled subject without an attribution verb is not an attribution tag."""
+    lines = [
+        _line("l1", "Narrator", "narrative", "Old Mrs. Rabbit took a basket and her umbrella."),
+    ]
+    reduced, reductions = reduce_scene_lines("s1", lines)
+    assert any(l["line_id"] == "l1" for l in reduced)
+    assert reductions == []
+
+
 def test_pronoun_attribution_kept_when_ambiguous():
     lines = [
         _line("l1", "Holmes", "dialogue", '"I agree."'),

@@ -1221,6 +1221,23 @@
                         </div>
                     </div>
 
+                    <!-- Character Timeline Panel -->
+                    <div class="glass-card" style="padding: 32px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;">
+                            <div>
+                                <h3 style="color: var(--accent-teal); font-size: 18px; font-weight: 700;">Character Timeline</h3>
+                                <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">Where a character speaks across the book &mdash; click a scene to open it in the Slicer.</p>
+                            </div>
+                            <select id="timelineCharacterSelect" style="background: rgba(255,255,255,0.04); border: 1px solid var(--border-color); color: var(--text-light); border-radius: 8px; padding: 10px 14px; font-size: 14px; min-width: 200px; cursor: pointer;">
+                                <option value="">Select a character&hellip;</option>
+                            </select>
+                        </div>
+                        <div id="timelineSummary" style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;"></div>
+                        <div id="characterTimelineBody" style="max-height: 480px; overflow-y: auto; padding-right: 12px;">
+                            <div style="text-align: center; padding: 40px; color: var(--text-dark);">Select a character to see the parts, chapters, and scenes they appear in.</div>
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -1975,6 +1992,100 @@
 
             document.getElementById("macroValProgress").textContent = `${verifiedChaptersCount} / ${totalChaptersCount}`;
             renderOperationalReadiness();
+            renderCharacterTimeline();
+        }
+
+        // Character Timeline: a plain presence map of the parts/chapters/scenes a
+        // character speaks in, built entirely from the loaded hierarchy. Clicking a
+        // scene reuses the sidebar tree's slicer-navigation pattern.
+        function renderCharacterTimeline() {
+            const select = document.getElementById("timelineCharacterSelect");
+            const body = document.getElementById("characterTimelineBody");
+            const summary = document.getElementById("timelineSummary");
+            if (!select || !body) return;
+
+            const roster = (currentHierarchy && currentHierarchy.metadata && currentHierarchy.metadata.global_characters)
+                ? currentHierarchy.metadata.global_characters.filter(c => c && c !== "Narrator")
+                : [];
+
+            const previous = select.value;
+            select.innerHTML = `<option value="">Select a character&hellip;</option>`
+                + roster.map(c => `<option value="${encodeURIComponent(c)}">${c}</option>`).join("");
+            // Preserve the prior selection only if that character is still in this book.
+            select.value = roster.includes(previous) ? previous : "";
+            select.onchange = () => renderCharacterTimelineFor(decodeURIComponent(select.value || ""));
+
+            if (!roster.length) {
+                summary.textContent = "";
+                body.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dark);">No characters detected in this book yet.</div>`;
+                return;
+            }
+            renderCharacterTimelineFor(decodeURIComponent(select.value || ""));
+        }
+
+        function renderCharacterTimelineFor(character) {
+            const body = document.getElementById("characterTimelineBody");
+            const summary = document.getElementById("timelineSummary");
+            if (!body) return;
+
+            if (!character) {
+                summary.textContent = "";
+                body.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dark);">Select a character to see the parts, chapters, and scenes they appear in.</div>`;
+                return;
+            }
+            if (!currentHierarchy || !currentHierarchy.parts) {
+                summary.textContent = "";
+                body.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dark);">No structure loaded.</div>`;
+                return;
+            }
+
+            let sceneCount = 0, chapterCount = 0, partCount = 0;
+            const partsHtml = [];
+
+            currentHierarchy.parts.forEach(part => {
+                const chaptersHtml = [];
+                let partHasHit = false;
+                (part.chapters || []).forEach(chapter => {
+                    const hits = (chapter.scenes || []).filter(
+                        s => Array.isArray(s.characters_present) && s.characters_present.includes(character));
+                    if (!hits.length) return;
+                    partHasHit = true;
+                    chapterCount++;
+                    sceneCount += hits.length;
+                    const chips = hits.map(scene => `
+                        <span class="scene-badge" style="cursor: pointer; padding: 4px 10px; border: 1px solid var(--accent-teal); color: var(--accent-teal); background: rgba(20,184,166,0.10);"
+                              onclick="timelineJumpToScene('${chapter.chapter_id}', '${scene.scene_id}')"
+                              title="Open Scene ${scene.scene_number} in the Slicer">Scene ${scene.scene_number}</span>`).join("");
+                    chaptersHtml.push(`
+                        <div style="margin: 8px 0 8px 16px;">
+                            <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 6px;">${chapter.chapter_title || chapter.chapter_id}</div>
+                            <div style="display: flex; flex-wrap: wrap; gap: 8px;">${chips}</div>
+                        </div>`);
+                });
+                if (partHasHit) {
+                    partCount++;
+                    partsHtml.push(`
+                        <div style="margin-bottom: 18px;">
+                            <div style="font-size: 14px; font-weight: 700; color: var(--text-light); margin-bottom: 4px;">${part.part_title || part.part_id}</div>
+                            ${chaptersHtml.join("")}
+                        </div>`);
+                }
+            });
+
+            if (!sceneCount) {
+                summary.textContent = `${character} has no attributed dialogue in this book.`;
+                body.innerHTML = `<div style="text-align: center; padding: 40px; color: var(--text-dark);">${character} does not speak in any scene (mentioned-only presence is not tracked).</div>`;
+                return;
+            }
+            summary.innerHTML = `<strong style="color: var(--text-light);">${character}</strong> speaks in <strong style="color: var(--accent-teal);">${sceneCount}</strong> scene${sceneCount === 1 ? "" : "s"} across ${chapterCount} chapter${chapterCount === 1 ? "" : "s"} and ${partCount} part${partCount === 1 ? "" : "s"}.`;
+            body.innerHTML = partsHtml.join("");
+        }
+
+        // Click a timeline scene chip -> open its chapter in the Slicer and highlight
+        // the scene (the same handler the sidebar structure tree's scene leaves use).
+        function timelineJumpToScene(chapterId, sceneId) {
+            loadChapterInSlicer(chapterId);
+            setTimeout(() => highlightScene(sceneId, true), 100);
         }
 
         async function toggleVerifyChapterSplit(chapterId, approved) {

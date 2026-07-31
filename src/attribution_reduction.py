@@ -38,21 +38,40 @@ _EXPRESSIVE_VERBS = {
 }
 _PRONOUN_SUBJECTS = {"he", "she", "they", "i", "we", "you"}
 
-_SUBJECT_RE = r"(?:[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*|he|she|they|I|we|you)"
-_VERB_RE = r"(?:say|said|says|reply|replied|respond|responded|answer|answered|ask|asked|whisper|whispered|shout|shouted|scream|screamed|mutter|muttered|hiss|hissed|snap|snapped)"
+# A tail made up entirely of these temporal/filler words carries no staging or
+# emotion (e.g. "one morning", "that day", "again"), so it must not force a tag to
+# be kept -- an otherwise-redundant tag around a resolved speaker can still be
+# removed. Any word outside this set (a manner adverb, "with a smile", etc.) makes
+# the tail non-benign and the tag is kept.
+_BENIGN_TAIL_WORDS = {
+    "a", "an", "the", "one", "that", "this",
+    "morning", "day", "night", "evening", "afternoon", "noon", "midnight",
+    "moment", "time", "times", "hour", "while", "instant",
+    "again", "then", "now", "later", "soon", "presently", "once",
+    "at", "last", "length", "first", "next", "afterwards", "afterward",
+}
+
+# A speaker is an optional lowercase determiner ("old", "young") then a proper
+# name of real-capitalized tokens, each of which may carry a trailing honorific
+# period ("Mrs.", "Mr.", "Dr."). Name tokens require a REAL capital (these
+# patterns are case-sensitive) so trailing lowercase manner adverbs -- "said
+# Mrs. Rabbit angrily" -- fall into the tail rather than being swallowed into the
+# name and silently dropped. Verbs and pronouns are matched case-insensitively
+# via scoped (?i:...) so a capitalized line-start "Said"/"He" still parses.
+_DET_RE = r"(?:(?:old|young|little|good|poor|the)\s+)*"
+_NAME_RE = r"[A-Z][a-zA-Z]*\.?(?:\s+[A-Z][a-zA-Z]*\.?)*"
+_SUBJECT_RE = rf"(?:{_DET_RE}{_NAME_RE}|(?i:he|she|they|I|we|you))"
+_VERB_RE = r"(?i:say|said|says|reply|replied|respond|responded|answer|answered|ask|asked|whisper|whispered|shout|shouted|scream|screamed|mutter|muttered|hiss|hissed|snap|snapped)"
 
 _ATTRIB_SUBJ_VERB = re.compile(
     rf"^\s*(?P<subject>{_SUBJECT_RE})\s+(?P<verb>{_VERB_RE})(?P<tail>[^.!?]*)[.!?;,:\s]*$",
-    re.IGNORECASE,
 )
 _ATTRIB_VERB_SUBJ = re.compile(
     rf"^\s*(?P<verb>{_VERB_RE})\s+(?P<subject>{_SUBJECT_RE})(?P<tail>[^.!?]*)[.!?;,:\s]*$",
-    re.IGNORECASE,
 )
 
 _DIALOGUE_TAG_TRAIL = re.compile(
     rf'^\s*(?P<quote>["“][^"”]+["”])\s*,?\s*(?P<tag>(?:(?:{_SUBJECT_RE})\s+(?:{_VERB_RE})|(?:{_VERB_RE})\s+(?:{_SUBJECT_RE}))(?:[^.!?]*)?)\s*[.!?]*\s*$',
-    re.IGNORECASE,
 )
 
 _DELIVERY_CANON = {
@@ -142,6 +161,13 @@ def _infer_neighbor_dialogue_speakers(lines: List[Dict[str, Any]], idx: int) -> 
     return prev_speaker, next_speaker
 
 
+def _is_benign_tail(tail: str) -> bool:
+    """True when a tag's tail is purely temporal/filler (no staging or emotion),
+    so it should not block removal of an otherwise-redundant attribution tag."""
+    tokens = re.findall(r"[a-zA-Z']+", (tail or "").lower())
+    return bool(tokens) and all(t in _BENIGN_TAIL_WORDS for t in tokens)
+
+
 def _classify_attribution(
     *,
     scene_id: str,
@@ -180,7 +206,7 @@ def _classify_attribution(
             reason="expressive_verb",
         )
 
-    if tail:
+    if tail and not _is_benign_tail(tail):
         return AttributionReductionEntry(
             scene_id=scene_id,
             source_line_id=line_id,

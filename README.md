@@ -239,6 +239,7 @@ Runs enrichment against `TheTaleofPeterRabbit.txt` and diffs the attributed spea
         *   `emotion_pass.py`: Text-only, character-agnostic emotion classification per line (the label a delivery is built from)
         *   `expression_profile.py`: Deterministic emotion + character → delivery layer (pitch/speed/`delivery_style` multipliers); canonicalizes character-designer output into a single style vocabulary
         *   `character_continuity.py`: Cross-scene delivery pass — appearance index + an entry-state modifier that scales delivery intensity by a character's residual state on re-entry (never changes classification)
+        *   `character_profile.py`: L7 — consolidates each character's scattered signals (visual, expression, appearance/arc, voice affinity) into one versioned portable profile (`character_profiles_consolidated.json`); private by default
         *   `eval_emotion.py`: Runnable qualitative harness (`python -m src.eval_emotion "<book>"`) — attribution/emotion/expression report for eyeballing
     *   **Production (Tier 3)**
         *   `scene_director.py`: The production crew — Spotting Artist, Music Director, Sound Designer, Dialogue Director, Character Designer (visual profiles **and** each character's `emotion_expression_profile`) (see the AI Roster doc) + generation-prompt builder + MemPalace sync
