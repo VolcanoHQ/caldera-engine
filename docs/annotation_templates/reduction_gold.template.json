@@ -1,0 +1,16 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "3-attribution-reduction"
+  },
+  "_instructions": "Dimension 3. One entry per attribution TAG in the text. action=remove when the speaker is already unambiguous to a listener who cannot see the page; keep when removing it would create ambiguity or it carries staging/emotion; metadata when an expressive verb carries delivery. delivery (metadata only) from: whisper, mutter, shout, scream, hiss, snap.",
+  "tags": [
+    { "line_id": "line_042", "classification": "redundant",   "action": "remove",   "delivery": null,      "reason": "speaker already resolved" },
+    { "line_id": "line_050", "classification": "required",    "action": "keep",     "delivery": null,      "reason": "ambiguous pronoun between two male speakers" },
+    { "line_id": "line_061", "classification": "convertible", "action": "metadata", "delivery": "whisper", "reason": "expressive verb carries delivery" }
+  ]
+}

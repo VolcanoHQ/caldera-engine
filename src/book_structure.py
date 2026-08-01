@@ -191,6 +191,44 @@ def descendants_of(structure: BookStructure, section_id: str, *, active_only: bo
     return descendants
 
 
+def _load_line_payload_scenes(pipeline_dir: str) -> list[dict[str, Any]]:
+    """The line-payload artifact that renders actually use, preferring the
+    enriched (post-G4) set over the raw one -- the authoritative scene slicing."""
+    for name in ("loop4_lines_enriched.json", "loop4_lines.json"):
+        path = os.path.join(pipeline_dir, name)
+        if os.path.exists(path):
+            data = _load_json(path)
+            if isinstance(data, list):
+                return data
+    return []
+
+
+def _authoritative_scene_order(pipeline_dir: str, loop3_scenes: list[dict[str, Any]]) -> list[str]:
+    """Ordered scene ids the structure must cover. Uses the line payloads' scenes
+    when present (they carry the finalized post-G4 slice), falling back to loop3.
+    Any loop3 scene not in the payloads is still included so nothing is lost."""
+    payload_scenes = _load_line_payload_scenes(pipeline_dir)
+    ordered = [s.get("scene_id", "") for s in payload_scenes if s.get("scene_id")]
+    if not ordered:
+        return [s.get("scene_id", "") for s in loop3_scenes if s.get("scene_id")]
+    seen = set(ordered)
+    for s in loop3_scenes:
+        sid = s.get("scene_id", "")
+        if sid and sid not in seen:
+            ordered.append(sid)
+            seen.add(sid)
+    return ordered
+
+
+def _scene_text_from_payload(pipeline_dir: str, scene_id: str) -> str:
+    """Reconstruct a scene's text by joining the line texts the payload assigns
+    to it -- used for scenes that exist only in the (re-segmented) payloads."""
+    for scene in _load_line_payload_scenes(pipeline_dir):
+        if scene.get("scene_id") == scene_id:
+            return "\n".join(str(l.get("text", "")) for l in scene.get("lines", []) if l.get("text"))
+    return ""
+
+
 def migrate_tier1_artifacts(
     pipeline_dir: str,
     *,
@@ -254,27 +292,43 @@ def migrate_tier1_artifacts(
                 updated_at=now,
             ))
 
-    scene_groups: dict[str, list[dict[str, Any]]] = {}
-    for scene in scenes:
-        legacy_id = scene.get("scene_id", "")
-        parent_legacy = legacy_id.rsplit("_s", 1)[0] if "_s" in legacy_id else None
-        scene_groups.setdefault(parent_legacy, []).append(scene)
+    # Scene slicing is authoritative and must match the line payloads exactly.
+    # The G4 Director's Scene Segmenter can re-segment during enrichment, so the
+    # finalized slice lives in loop4_lines_enriched.json (post-G4), which can be
+    # FINER than loop3_scenes.json (pre-G4). Building the structure from loop3
+    # alone would orphan the payload's extra scenes and silently drop their lines
+    # (the Peter Rabbit 7->3 / 42->25 bug). So take the scene set from the line
+    # payloads when present, keeping loop3's boundary metadata for scenes it knows
+    # and synthesizing sections (text joined from the lines) for payload-only ones.
+    loop3_by_id = {s.get("scene_id", ""): s for s in scenes if s.get("scene_id")}
+    authoritative = _authoritative_scene_order(pipeline_dir, scenes)
+
+    scene_groups: dict[str, list[str]] = {}
+    for scene_id in authoritative:
+        parent_legacy = scene_id.rsplit("_s", 1)[0] if "_s" in scene_id else None
+        scene_groups.setdefault(parent_legacy, []).append(scene_id)
 
     for parent_legacy, group in scene_groups.items():
-        for index, scene in enumerate(group, 1):
-            legacy_id = scene.get("scene_id") or f"{parent_legacy}_s{index}"
-            text_block = scene.get("text_block", "")
+        for index, legacy_id in enumerate(group, 1):
+            loop3_scene = loop3_by_id.get(legacy_id)
+            if loop3_scene is not None:
+                text_block = loop3_scene.get("text_block", "")
+                boundary_source = loop3_scene.get("boundary_source", "unknown")
+            else:
+                # Payload-only scene (produced by post-loop3 re-segmentation);
+                # reconstruct its text from the lines the payload assigns to it.
+                text_block = _scene_text_from_payload(pipeline_dir, legacy_id)
+                boundary_source = "line_payload"
             metadata = {
                 "source_chars": len(text_block),
-                "boundary_source": scene.get("boundary_source", "unknown"),
+                "boundary_source": boundary_source,
                 "text_block": text_block,
             }
-            # Carry v2 boundary intelligence when present
-            if scene.get("detector_version"):
+            if loop3_scene and loop3_scene.get("detector_version"):
                 metadata["boundary_v2"] = {
-                    "confidence":       scene.get("confidence"),
-                    "reasons":          scene.get("reasons", []),
-                    "detector_version": scene.get("detector_version"),
+                    "confidence":       loop3_scene.get("confidence"),
+                    "reasons":          loop3_scene.get("reasons", []),
+                    "detector_version": loop3_scene.get("detector_version"),
                 }
             sections.append(BookSection(
                 section_id=_legacy_section_id(legacy_id),

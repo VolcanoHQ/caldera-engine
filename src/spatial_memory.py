@@ -136,7 +136,13 @@ class MemPalace:
         logger.info(f"SQLite Relational Palace initialized successfully at {self.sqlite_path}.")
 
     def _init_chromadb(self):
-        """Initializes persistent ChromaDB client for fast semantic timbre searches."""
+        """Initializes persistent ChromaDB client for fast semantic timbre searches.
+
+        A corrupt/version-incompatible persisted store raises a Rust
+        pyo3 *panic* (`PanicException`), which is NOT a normal `Exception` -- so a
+        bare `except Exception` lets it escape and kills the whole ingest. Catch
+        `BaseException` (re-raising real interrupts) so this always degrades to the
+        NumPy similarity fallback instead of crashing the pipeline."""
         try:
             self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
             self.chroma_collection = self.chroma_client.get_or_create_collection(
@@ -144,8 +150,11 @@ class MemPalace:
                 metadata={"hnsw:space": "cosine"} # Use cosine similarity for timbre distance
             )
             logger.info("ChromaDB Vector Store initialized successfully.")
-        except Exception as e:
-            logger.error(f"Failed to initialize ChromaDB: {e}. Falling back to NumPy similarity.")
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as e:
+            logger.error(f"Failed to initialize ChromaDB ({type(e).__name__}: {e}). "
+                         f"Falling back to NumPy similarity.")
             self.chroma_client = None
             self.chroma_collection = None
 

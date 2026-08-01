@@ -1,0 +1,20 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "6-production"
+  },
+  "_instructions": "Dimension 6. Advanced tiers only (the only tier-specific dimension). Per scene: music cue, SFX cue (grounded in text), dramatic direction, and - for media tiers - camera/cinematic direction. Leave fields empty when not applicable to the tier under evaluation.",
+  "scenes": [
+    {
+      "scene_id": "scene_001",
+      "music_cue": "Whimsical, pastoral woodwinds introduce a sunny morning.",
+      "sfx_cue": "Gentle breeze rustling leaves, distant birds.",
+      "dramatic_direction": "",
+      "camera_direction": ""
+    }
+  ]
+}

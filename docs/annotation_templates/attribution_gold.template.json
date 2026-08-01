@@ -1,0 +1,19 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "2-attribution"
+  },
+  "_instructions": "Dimension 2. Per dialogue line, the speaking character and aliases. Speaker must be explicit or inferable from immediate context; set uncertain=true rather than guessing. 'roster' is the book-level canonical-name -> aliases map (scored separately from per-line attribution).",
+  "roster": {
+    "Sherlock Holmes": ["Holmes", "he", "the detective"],
+    "Dr. Watson": ["Watson", "I"]
+  },
+  "lines": [
+    { "line_id": "line_042", "scene_id": "scene_001", "speaker": "Sherlock Holmes", "aliases": ["Holmes"], "uncertain": false },
+    { "line_id": "line_043", "scene_id": "scene_001", "speaker": "",                "aliases": [],         "uncertain": true  }
+  ]
+}

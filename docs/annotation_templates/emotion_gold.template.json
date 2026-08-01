@@ -1,0 +1,18 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "4-emotion"
+  },
+  "_instructions": "Dimension 4. Per-line emotion from TEXT ALONE (character-agnostic). Allowed labels: flat, cheery, sad, angry, violent, tense, fearful. Choose flat unless there is meaningful emotional evidence in the words. Two independent reviewers label; record agreement and adjudicate. Also fill 'distribution' with per-label counts across the whole book - the aggregate is what catches emotion collapse.",
+  "lines": [
+    { "line_id": "line_001", "scene_id": "scene_001", "emotion": "flat",    "evidence": [] },
+    { "line_id": "line_002", "scene_id": "scene_001", "emotion": "fearful", "evidence": ["I'm afraid to go in there."] }
+  ],
+  "distribution": {
+    "flat": 0, "cheery": 0, "sad": 0, "angry": 0, "violent": 0, "tense": 0, "fearful": 0
+  }
+}

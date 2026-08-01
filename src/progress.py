@@ -86,6 +86,14 @@ def finish(book: str, stage: str) -> None:
         pass
 
 
+def snapshot(book: str) -> Dict[str, Any]:
+    """Public read of one book's live progress entry (empty dict if none)."""
+    try:
+        return _load().get(book, {})
+    except Exception:
+        return {}
+
+
 def clear(book: str) -> None:
     try:
         state = _load()

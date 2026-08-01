@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.models import ManuscriptManifest
+from src.attribution_reduction import load_performance_scene_lines
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("ProductionMixer")
@@ -470,6 +471,18 @@ def assemble_scene(scene_id: str, line_wavs: List[Tuple[str, Dict[str, Any]]], d
 # Orchestration
 # ----------------------------------------------------
 
+def performance_or_manifest_lines(book_stem: str, scene) -> List[Dict[str, Any]]:
+    """The line source every render path should use for a scene: the crew's
+    performance script (attribution reduction + emotion pass + character-aware
+    delivery) when it has been built, else the raw manifest lines so a bare
+    render still works. Shared by Tier 1/2 (mix_voice_track) and Tier 3
+    (mix_production) so all tiers stay performance-aware and consistent."""
+    lines = load_performance_scene_lines(book_stem, scene.scene_id)
+    if not lines:
+        lines = [l.model_dump() for l in scene.lines]
+    return lines
+
+
 def mix_voice_track(manifest_path: str, output_path: str, single_narrator: bool) -> Dict[str, Any]:
     """Voice-track assembly shared by Tier 1 (one narrator) and Tier 2 (cast).
 
@@ -482,7 +495,7 @@ def mix_voice_track(manifest_path: str, output_path: str, single_narrator: bool)
     """
     with open(manifest_path, "r", encoding="utf-8") as f:
         manifest = ManuscriptManifest.model_validate_json(f.read())
-    book_stem = os.path.splitext(manifest.source_file)[0]
+    book_stem = os.path.splitext(os.path.basename(manifest.source_file))[0]
 
     from src.voice_synthesizer import VoiceSynthesizer
     synth = VoiceSynthesizer()
@@ -513,8 +526,8 @@ def mix_voice_track(manifest_path: str, output_path: str, single_narrator: bool)
                                   "segment_index": len(segments)})
             for scene in chapter.scenes:
                 lines = []
-                for l in scene.lines:
-                    d = l.model_dump()
+                for d in performance_or_manifest_lines(book_stem, scene):
+                    d = dict(d)
                     if single_narrator:
                         d["character"] = "Narrator"
                         d["speaker_id"] = "char_narrator"
@@ -701,7 +714,7 @@ def mix_production(manifest_path: str, output_path: str) -> Dict[str, Any]:
     for part in manifest.parts:
         for chapter in part.chapters:
             for scene in chapter.scenes:
-                lines = [l.model_dump() for l in scene.lines]
+                lines = performance_or_manifest_lines(book_stem, scene)
 
                 # Splice dramatized inserts (additive, flagged) after their anchors.
                 # Foley-only "vocals" (Thud, Creak) are rerouted to generated SFX

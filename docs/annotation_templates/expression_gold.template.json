@@ -1,0 +1,31 @@
+{
+  "_meta": {
+    "book_id": "",
+    "source_hash": "",
+    "annotator": "",
+    "guideline_version": "1.0",
+    "date": "",
+    "dimension": "5-expression"
+  },
+  "_instructions": "Dimension 5. Character-level. How each character EXPRESSES an emotion once they feel it (not what they feel). Emotion keys MUST be from: cheery, sad, angry, violent, tense, fearful (one entry each - do not use overlapping nouns like humor+joy). Style MUST be from the vocabulary below. Include only emotions the text actually reveals for the character; omit an emotion rather than invent a style. Every entry carries evidence (verbatim snippet), a 0-1 confidence, and inferred=true when the text never shows it directly.",
+  "_style_vocabulary": {
+    "reserved": ["hidden", "internalized", "suppressed", "restrained", "subtle", "dry", "quiet"],
+    "balanced": ["controlled", "measured"],
+    "intensified": ["open", "expressive", "overt", "intense", "explosive"]
+  },
+  "profiles": [
+    {
+      "character": "Sherlock Holmes",
+      "emotion_expression_profile": {
+        "angry":  { "style": "restrained", "confidence": 0.85, "inferred": true,  "evidence": ["Holmes clenched his jaw but said nothing."] },
+        "cheery": { "style": "dry",        "confidence": 0.70, "inferred": true,  "evidence": ["A thin, sardonic smile crossed his face."] }
+      }
+    },
+    {
+      "character": "",
+      "emotion_expression_profile": {
+        "": { "style": "", "confidence": 0.0, "inferred": false, "evidence": [""] }
+      }
+    }
+  ]
+}

@@ -199,6 +199,38 @@ three guard paths curl-tested.
 **Evidence:** `nlp_engine/epub_ingestion.py` (stdlib-only: zipfile + ElementTree +
 HTMLParser); `.epub` accepted by the parser CLI and the render job's source finder.
 
+### M-4 · Performance script + render-path convergence — ✅ DONE
+**DoD:**
+- [x] Per-book `performance_script.json` (`src/attribution_reduction.py`) built in three
+      zero-LLM passes: attribution reduction (redundant tags removed, expressive verbs →
+      delivery metadata, ambiguous tags kept — each with a recorded reason), text-only
+      emotion classification (`src/emotion_pass.py`), and a character expression layer
+      (`src/expression_profile.py`) that tunes delivery without changing the emotion label.
+- [x] Emotion detection is character-agnostic by construction: an earlier baseline/history
+      bias collapsed real books onto one emotion (Red-Headed League 80% "cheery", Speckled
+      Band 62% "fearful"); post-fix both read majority-flat with sensible spreads.
+      Distribution guardrails (`tests/test_emotion_distribution.py`) assert no non-neutral
+      emotion exceeds 55% on the offender books and that swapping character names leaves the
+      distribution identical.
+- [x] Character-designer output hardened: a `field_validator` coerces malformed
+      `emotion_expression_profile` so one bad profile can't fail the whole cast's
+      validation; `canonicalize_expression_profile` folds noun emotions onto the detection
+      vocabulary, aliases ~35 near-synonym styles, and drops unknown emotions/styles.
+- [x] All render paths consume the same artifact: Tier 1/2 via `mix_voice_track`, Tier 3 via
+      `mix_production` (shared `performance_or_manifest_lines`), and the render job builds the
+      performance script for every tier before mixing. The primary upload flow was repointed
+      off the legacy `CalderaPipeline`/`tts_compiler` lane onto `render_job` so it renders
+      through the same performance-aware path as the Console.
+- [x] Director corrections (`/api/console/emotion_override`, `/api/console/attribution_override`)
+      persist as tier3 override files and re-apply on every rebuild; `emotion_corrected` /
+      `attribution_reduction_corrected` feedback events recorded.
+- [x] Dead competing taxonomy removed: the orphaned `/api/process_scenes_async` route and its
+      GoEmotions `map_performance_mods` (no UI callers) deleted, leaving one emotion vocabulary.
+**Evidence:** `src/attribution_reduction.py`, `src/emotion_pass.py`,
+`src/expression_profile.py`; `python -m src.eval_emotion "<book>"` inspection harness; test
+suite `tests/test_emotion_pass.py`, `tests/test_expression_profile.py`,
+`tests/test_emotion_distribution.py`, `tests/test_render_convergence.py` (172 passing).
+
 ---
 
 ## Tier 2 — post-MVP (OPEN, in build order)

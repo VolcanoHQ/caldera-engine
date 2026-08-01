@@ -31,6 +31,8 @@ from src.book_structure import (
     split_section,
 )
 from src.feedback_events import event_type_for_operation, record_feedback_event
+from src.attribution_reduction import build_performance_script, load_performance_scene_lines
+from src.emotion_pass import EMOTION_PASS_VERSION, EMOTION_TITLES
 from src.book_structure_adapter import (
     chapter_lookup,
     load_line_payloads as adapter_load_line_payloads,
@@ -558,16 +560,25 @@ def refresh_book_director(
         os.path.join(tier3_dir, "canonical_manifest.json"),
         manifest.model_dump(),
     )
-
     from src import scene_director
 
-    direction_result = scene_director.direct_manifest(manifest_path, sync_mempalace=sync_mempalace)
-    sound_design_path = scene_director.run_sound_design(manifest_path)
-    dramatization_path = scene_director.run_dramatization(manifest_path)
+    # Character design (emotion_expression_profile per character) must land before
+    # the performance script build so the expression layer can personalize delivery.
     character_profiles_path = scene_director.run_character_design(
         manifest_path,
         sync_mempalace=sync_mempalace,
     )
+    performance_script_path = build_performance_script(manifest_path)
+
+    # L7: consolidate the scattered per-character signals (visual + expression +
+    # appearance index + emotional arc) into one portable profile artifact. Needs
+    # both character_profiles.json and performance_script.json, so it runs last.
+    from src.character_profile import build_character_profiles
+    consolidated_profiles_path = build_character_profiles(book)
+
+    direction_result = scene_director.direct_manifest(manifest_path, sync_mempalace=sync_mempalace)
+    sound_design_path = scene_director.run_sound_design(manifest_path)
+    dramatization_path = scene_director.run_dramatization(manifest_path)
     qc_report_path = scene_director.run_qc_review(manifest_path) if include_qc else None
     if not include_qc:
         stale_qc_path = os.path.join(tier3_dir, "qc_report.json")
@@ -582,6 +593,8 @@ def refresh_book_director(
         "director": direction_result,
         "artifacts": {
             "manifest": manifest_path,
+            "performance_script": performance_script_path,
+            "character_profiles_consolidated": consolidated_profiles_path,
             "sound_design": sound_design_path,
             "dramatization": dramatization_path,
             "character_profiles": character_profiles_path,
@@ -640,6 +653,7 @@ def list_books() -> List[Dict[str, Any]]:
                 "alias_merges": os.path.exists(os.path.join(t1, "loopE_llm_alias_merges.json")),
                 "sfx_cues": os.path.exists(os.path.join(t1, "loopE_llm_sfx_cues.json")),
                 "production_script": os.path.exists(os.path.join(t3, "production_script.json")),
+                "performance_script": os.path.exists(os.path.join(t3, "performance_script.json")),
                 "sound_design": os.path.exists(os.path.join(t3, "sound_design.json")),
                 "dramatization": os.path.exists(os.path.join(t3, "dramatization.json")),
                 "character_profiles": os.path.exists(os.path.join(t3, "character_profiles.json")),
@@ -714,7 +728,9 @@ def scene_detail(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
         return None
     t1, t3 = _tier1_dir(book), _tier3_dir(book)
     structure = load_structure(book)
-    payload_lines = scene_lines(structure, scene_id, line_payloads=adapter_load_line_payloads(book))
+    payload_lines = load_performance_scene_lines(book, scene_id)
+    if not payload_lines:
+        payload_lines = scene_lines(structure, scene_id, line_payloads=adapter_load_line_payloads(book))
     if not payload_lines:
         return None
     overrides = load_speaker_overrides(book)
@@ -732,6 +748,9 @@ def scene_detail(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
             "confidence": l.get("confidence"),
             "attribution_method": l.get("attribution_method"),
             "utterance_type": l.get("utterance_type", "speech"),
+            "attribution_reduction": l.get("attribution_reduction"),
+            "attribution_delivery": l.get("attribution_delivery"),
+            "emotion_context": l.get("emotion_context"),
             "wav": _line_wav_path(l),
         })
     section = resolve_scene(structure, scene_id)
@@ -816,6 +835,155 @@ def apply_speaker_overrides(lines: List[Dict[str, Any]], overrides: Dict[str, Di
             l["speaker_locked"] = True
             applied += 1
     return applied
+
+
+def load_attribution_reduction_overrides(book: str) -> Dict[str, Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return {}
+    return _load_json(os.path.join(_tier3_dir(book), "attribution_reduction_overrides.json")) or {}
+
+
+def _find_attribution_reduction_entry(book: str, scene_id: str, line_id: str) -> Dict[str, Any]:
+    path = os.path.join(_tier3_dir(book), "performance_script.json")
+    data = _load_json(path) or {}
+    for item in data.get("reductions", []):
+        if item.get("scene_id") == scene_id and item.get("source_line_id") == line_id:
+            return item
+    return {}
+
+
+def save_attribution_reduction_override(
+    book: str,
+    scene_id: str,
+    line_id: str,
+    *,
+    decision: str,
+    classification: str = "",
+    note: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Capture director correction of attribution reduction decisions."""
+    book = _safe_book(book)
+    if not book or not re.fullmatch(r"[A-Za-z0-9_]+", scene_id or "") or not line_id:
+        return None
+    if decision not in ("restore_removed", "remove_preserved", "change_classification"):
+        return None
+
+    overrides = load_attribution_reduction_overrides(book)
+    scene_bucket = overrides.setdefault(scene_id, {})
+    scene_bucket[line_id] = {
+        "decision": decision,
+        "classification": classification or None,
+        "note": (note or "").strip()[:200] or None,
+        "at": __import__("time").time(),
+    }
+    os.makedirs(_tier3_dir(book), exist_ok=True)
+    path = os.path.join(_tier3_dir(book), "attribution_reduction_overrides.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(tmp, path)
+
+    structure = load_structure(book)
+    manifest_path = os.path.join(_tier3_dir(book), "canonical_manifest.json")
+    if not os.path.exists(manifest_path):
+        line_payloads = adapter_load_line_payloads(book)
+        manifest = structure_to_manifest(structure, line_payloads=line_payloads)
+        manifest_path = _write_json(manifest_path, manifest.model_dump())
+    build_performance_script(manifest_path)
+
+    before = _find_attribution_reduction_entry(book, scene_id, line_id)
+    after = {
+        "scene_id": scene_id,
+        "source_line_id": line_id,
+        "decision": decision,
+        "classification": classification or None,
+        "note": (note or "").strip()[:200] or None,
+    }
+    record_feedback_event(
+        event_type="attribution_reduction_corrected",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="attribution_reduction",
+        algorithm_version="attribution_reduction_v1",
+        before=before,
+        after=after,
+        confidence=before.get("confidence") if isinstance(before, dict) else None,
+    )
+    return {"scene_id": scene_id, "line_id": line_id, "decision": decision, "classification": classification or None}
+
+
+def load_emotion_overrides(book: str) -> Dict[str, Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return {}
+    return _load_json(os.path.join(_tier3_dir(book), "emotion_overrides.json")) or {}
+
+
+def _find_emotion_context(book: str, scene_id: str, line_id: str) -> Dict[str, Any]:
+    path = os.path.join(_tier3_dir(book), "performance_script.json")
+    data = _load_json(path) or {}
+    for scene in data.get("scenes", []):
+        if scene.get("scene_id") != scene_id:
+            continue
+        for line in scene.get("lines", []):
+            if str(line.get("line_id")) == line_id:
+                return line.get("emotion_context") or {}
+    return {}
+
+
+def save_emotion_override(
+    book: str,
+    scene_id: str,
+    line_id: str,
+    *,
+    emotion: str,
+    note: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Capture director correction of a line's detected emotion. Rebuilding the
+    performance script re-applies it and folds it into the character's running
+    emotional history, so the character-aware pass keeps learning from corrections."""
+    book = _safe_book(book)
+    if not book or not re.fullmatch(r"[A-Za-z0-9_]+", scene_id or "") or not line_id:
+        return None
+    emotion_title = (emotion or "").strip().title()
+    if emotion_title not in EMOTION_TITLES:
+        return None
+
+    overrides = load_emotion_overrides(book)
+    scene_bucket = overrides.setdefault(scene_id, {})
+    before = _find_emotion_context(book, scene_id, line_id)
+    scene_bucket[line_id] = {
+        "emotion": emotion_title,
+        "note": (note or "").strip()[:200] or None,
+        "at": __import__("time").time(),
+    }
+    os.makedirs(_tier3_dir(book), exist_ok=True)
+    path = os.path.join(_tier3_dir(book), "emotion_overrides.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(tmp, path)
+
+    structure = load_structure(book)
+    manifest_path = os.path.join(_tier3_dir(book), "canonical_manifest.json")
+    if not os.path.exists(manifest_path):
+        line_payloads = adapter_load_line_payloads(book)
+        manifest = structure_to_manifest(structure, line_payloads=line_payloads)
+        manifest_path = _write_json(manifest_path, manifest.model_dump())
+    build_performance_script(manifest_path)
+
+    record_feedback_event(
+        event_type="emotion_corrected",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="emotion_pass",
+        algorithm_version=EMOTION_PASS_VERSION,
+        before=before,
+        after={"scene_id": scene_id, "line_id": line_id, "emotion": emotion_title},
+        confidence=before.get("confidence") if isinstance(before, dict) else None,
+    )
+    return {"scene_id": scene_id, "line_id": line_id, "emotion": emotion_title}
 
 
 def load_scene_overrides(book: str) -> Dict[str, Dict[str, Any]]:

@@ -10,6 +10,12 @@ AI gates, schema-validated and text-grounded AI passes, durable human overrides,
 review console with a per-scene mix timeline, and zero-shot voice cloning via
 `XTTS-v2`.
 
+Between analysis and audio sits a **performance script**: every scene is turned into
+delivery instructions — redundant dialogue tags collapsed, each line's emotion
+classified from the text, and each character's expression of that emotion personalized
+— so even the single-narrator tier *performs* the book rather than flatly reading it.
+See [Performance Script](#-performance-script--delivery-intelligence) below.
+
 ---
 
 ## 🔒 Security & Licensing Notes
@@ -128,15 +134,65 @@ Caldera Engine's tiers describe **output ambition** (what kind of audiobook you 
 
 | Tier | Output | Text-analysis AIs | Status |
 |---|---|---|---|
-| **Tier 1 — Single Narrator** | One narrator voice reads everything. Deterministic slicing (parts → chapters → scenes → lines) with AI *gates* (G1 Part Verifier, G2 Chapter Verifier, G4 Director's Scene Segmenter) that fire only when the deterministic pass signals failure. Zero cost, fully offline on clean manuscripts. | **0 always-on** + up to 4 gate AIs | ✅ Live end-to-end. Text fidelity vs human Tier 1 golds: **Peter Rabbit 99.5%, A Case of Identity 100%, Alice 99.8%** (≤0.31% contamination). Single-narrator master generation: `python -m src.production_mixer --tier1 --manifest <manifest.json> --output master.wav` (ACX-mastered) |
+| **Tier 1 — Single Narrator** | One narrator, but a *performing* narrator: the [performance script](#-performance-script--delivery-intelligence) gives every line emotion-driven delivery and character-specific expression (the Roy Dotrice model — one voice, many performances), not a flat read. Deterministic slicing (parts → chapters → scenes → lines) with AI *gates* (G1 Part Verifier, G2 Chapter Verifier, G4 Director's Scene Segmenter) that fire only when the deterministic pass signals failure. Zero cost, fully offline on clean manuscripts. | **0 always-on** + up to 4 gate AIs | ✅ Live end-to-end. Text fidelity vs human Tier 1 golds: **Peter Rabbit 99.5%, A Case of Identity 100%, Alice 99.8%** (≤0.31% contamination). Single-narrator master generation: `python -m src.production_mixer --tier1 --manifest <manifest.json> --output master.wav` (ACX-mastered) |
 | **Tier 2 — Narrator + Character Voices** | Dialogue attributed to real characters, each with a distinct voice; emotion + vocalization tags. Opt-in via `--enable-llm-enrichment`. Large director-segmented scenes are attributed in ~30-line windows so every call fits every provider's request cap. | **4** (Attribution, Alias Resolver, Clean-Check, Continuity Reviewer) | ✅ Live; **100%** on Peter Rabbit and **99.2%** (124/125) on A Case of Identity vs. human Tier 2 golds; validated on the 12-story Sherlock corpus, Alice, and an 8-book overnight campaign |
-| **Tier 3 — Full Production ("Graphic Audio"-style)** | Everything above + scene-scored music with stingers and stop/resume state events, layered/composite SFX, emotionally-directed creature sounds, generated per-scene ambience, grounded dramatization, delivery direction, ducked multi-track mix. | **+8 crew** (Spotter, Music Director, Sound Designer, Dialogue Director, Dramatist, Book Analyst, Character Designer, QC Critic) | ✅ Full masters produced for Peter Rabbit and A Case of Identity (45.6 min); scene stills + seed-locked character sheets via sd-turbo, identity-locked variants via SD1.5+IP-Adapter |
+| **Tier 3 — Full Production ("Graphic Audio"-style)** | Everything above + scene-scored music with stingers and stop/resume state events, layered/composite SFX, emotionally-directed creature sounds, generated per-scene ambience, grounded dramatization, delivery direction, ducked multi-track mix. | **+8 crew** (Spotter, Music Director, Sound Designer, Dialogue Director, Dramatist, Book Analyst, Character Designer — who also authors each character's [expression profile](#-performance-script--delivery-intelligence) — QC Critic) | ✅ Full masters produced for Peter Rabbit and A Case of Identity (45.6 min); scene stills + seed-locked character sheets via sd-turbo, identity-locked variants via SD1.5+IP-Adapter |
 
 Free-tier LLM budget: a 7-scene book needs **0** LLM calls for Tier 1, **~12** for Tier 2, **~40** for Tier 3 — comfortably inside Groq's free daily limits, with Gemini reserved for the quality-critical tasks (alias merging, clean-check, whole-book analysis).
 
 > Note: two older modules (`looped_analyzer.py`, `hybrid_nlp_pipeline.py`) predate this
 > architecture and remain unwired reference implementations; the `xCoRe` coreference upgrade
 > for character discovery remains future work (today's roster is a validated heuristic).
+
+---
+
+## 🎭 Performance Script — delivery intelligence
+
+Before any tier renders audio, Caldera Engine builds a **performance script** per book
+(`data/corpus/pipeline/{book}/tier3/performance_script.json`, via
+[`src/attribution_reduction.py`](src/attribution_reduction.py)). It turns an attributed
+manuscript into *delivery instructions* in three deterministic, zero-LLM passes:
+
+1. **Attribution reduction** — a spoken audiobook shouldn't read *"'I agree,' said Holmes"*
+   aloud when the speaker is already unambiguous. Redundant dialogue tags are removed,
+   genuinely ambiguous ones (*"said he"* between two speakers) are kept, and expressive
+   verbs become delivery metadata (*"whispered Holmes"* → the line is marked `whisper`).
+   Every decision is stored with its reason for review, and directors can override any of
+   them.
+
+2. **Emotion classification** ([`src/emotion_pass.py`](src/emotion_pass.py)) — each line is
+   tagged with an emotion (cheery / sad / angry / violent / tense / fearful, or flat) from
+   the **text alone**. This pass is deliberately *character-agnostic*: the same words yield
+   the same emotion no matter who speaks. An earlier design that biased detection by
+   character identity collapsed whole books onto one emotion (a detective novel read 80%
+   "cheery"); [`tests/test_emotion_distribution.py`](tests/test_emotion_distribution.py) now
+   guards against that regression.
+
+3. **Expression profiles** ([`src/expression_profile.py`](src/expression_profile.py)) —
+   *how* a character delivers a detected emotion is where identity belongs. A character's
+   expression profile (`restrained`, `dry`, `explosive`, …, authored by the Tier 3
+   Character Designer) tunes the pitch/speed/delivery of an already-classified emotion
+   **without ever changing the label** — so Holmes's restrained anger and a brawler's
+   explosive anger read as the same emotion but perform differently. Delivery modifiers are
+   deterministic multipliers centered on 1.0; malformed or hallucinated designer output is
+   canonicalized (noun emotions folded to keys, unknown styles dropped) so one bad profile
+   can never sink a render.
+
+**Every render path consumes this same artifact.** Tier 1 (single narrator) and Tier 2
+(cast) read it in `mix_voice_track`; Tier 3 in `mix_production`. That convergence is what
+makes the single-narrator tier a *character-aware performance* — one voice giving each
+character a distinct delivery — rather than a flat read. The script is rebuilt on every
+render (it's cheap and character-agnostic detection needs no cached state), and director
+corrections (emotion or attribution) are captured as overrides in the tier3 directory and
+re-applied on each rebuild.
+
+Inspect it on any ingested book:
+```bash
+python -m src.eval_emotion "The Red-Headed League"
+```
+prints the attribution reductions, the emotion distribution (with an over-forcing verdict),
+and the character-styled delivery — the human-eyeball counterpart to the automated
+distribution guardrails.
 
 ---
 
@@ -178,10 +234,17 @@ Runs enrichment against `TheTaleofPeterRabbit.txt` and diffs the attributed spea
         *   `tier_1_parser.py`: Tier 1 deterministic ingestion (parts → chapters → scenes → lines) + opt-in Tier 2 enrichment (attribution AI, alias resolver, clean-check, batch `--input-dir` mode)
         *   `llm_client.py`: Free-tier LLM provider chain (Groq volume → Gemini quality reserve → Ollama offline) with quota tracking, cooldowns, per-task provider gates, and audit logging (`data/llm_call_audit.jsonl`)
         *   `models.py`: Centralized Pydantic schemas (`ScriptLine` incl. `utterance_type`, manifests)
+    *   **Performance script (all tiers)**
+        *   `attribution_reduction.py`: Builds `performance_script.json` — collapses redundant dialogue tags, converts expressive verbs to delivery metadata, then runs the emotion + expression passes; re-applies director overrides on every rebuild (zero-LLM)
+        *   `emotion_pass.py`: Text-only, character-agnostic emotion classification per line (the label a delivery is built from)
+        *   `expression_profile.py`: Deterministic emotion + character → delivery layer (pitch/speed/`delivery_style` multipliers); canonicalizes character-designer output into a single style vocabulary
+        *   `character_continuity.py`: Cross-scene delivery pass — appearance index + an entry-state modifier that scales delivery intensity by a character's residual state on re-entry (never changes classification)
+        *   `character_profile.py`: L7 — consolidates each character's scattered signals (visual, expression, appearance/arc, voice affinity) into one versioned portable profile (`character_profiles_consolidated.json`); private by default
+        *   `eval_emotion.py`: Runnable qualitative harness (`python -m src.eval_emotion "<book>"`) — attribution/emotion/expression report for eyeballing
     *   **Production (Tier 3)**
-        *   `scene_director.py`: The production crew — Spotting Artist, Music Director, Sound Designer, Dialogue Director (see the AI Roster doc) + generation-prompt builder + MemPalace sync
+        *   `scene_director.py`: The production crew — Spotting Artist, Music Director, Sound Designer, Dialogue Director, Character Designer (visual profiles **and** each character's `emotion_expression_profile`) (see the AI Roster doc) + generation-prompt builder + MemPalace sync
         *   `audio_generation.py`: Local generation — MusicGen (music beds/stingers) + AudioLDM (SFX layers/ambience), all prompt-cached under `data/generated_audio/`
-        *   `production_mixer.py`: Deterministic Chain-D assembly — line-anchored timeline, layered SFX composites, sidechain-ducked music, ACX mastering; `line_overrides.json` for human production edits
+        *   `production_mixer.py`: Deterministic Chain-D assembly — sources lines from the performance script (all tiers share `performance_or_manifest_lines`), line-anchored timeline, layered SFX composites, sidechain-ducked music, ACX mastering; `line_overrides.json` for human production edits
     *   **Synthesis & audio**
         *   `voice_synthesizer.py`: XTTS-v2 engine (real CPU/GPU synthesis; pinned per-character speakers via MemPalace; `[pause:X]` pacing markup; edge-tts/mock as fallbacks only)
         *   `audio_mixer.py`: Multi-track mixer, ducking, ACX mastering/verification
@@ -194,7 +257,7 @@ Runs enrichment against `TheTaleofPeterRabbit.txt` and diffs the attributed spea
         *   `looped_analyzer.py`, `hybrid_nlp_pipeline.py`: unwired reference implementations (predate the current architecture)
 *   `eval_tier1_llm_enrichment.py`: Accuracy harness comparing enriched output against hand-authored gold-standard corpus references
 *   `data/corpus/HumanProcessed/`: Hand-authored gold-standard Tier 1/2/3 reference scripts, used for evaluation
-*   `data/corpus/pipeline/{book}/`: Per-book artifacts — `tier1/` (loops + enrichment sidecars) and `tier3/` (spotting, production script, sound design, generation prompts, line overrides)
-*   `docs/`: Architecture docs — **start with [`Caldera Engine AI Roster & System Prompts.md`](docs/Caldera%20Engine%20AI%20Roster%20&%20System%20Prompts.md)** (every AI, counted and specified) and [`Caldera Engine Production Knowledge & Media Generation Roadmap.md`](docs/Caldera%20Engine%20Production%20Knowledge%20&%20Media%20Generation%20Roadmap.md) (layer model, storage mapping, execution chains); `Caldera Engine Tier 1 Cascading Loops Design.md` for the Tier 1 loop spec
+*   `data/corpus/pipeline/{book}/`: Per-book artifacts — `tier1/` (loops + enrichment sidecars) and `tier3/` (`performance_script.json`, `character_profiles.json` with expression profiles, emotion/attribution override files, spotting, production script, sound design, generation prompts, line overrides)
+*   `docs/`: Architecture docs — **start with [`Caldera Engine AI Roster & System Prompts.md`](docs/Caldera%20Engine%20AI%20Roster%20&%20System%20Prompts.md)** (every AI, counted and specified) and [`Caldera Engine Production Knowledge & Media Generation Roadmap.md`](docs/Caldera%20Engine%20Production%20Knowledge%20&%20Media%20Generation%20Roadmap.md) (layer model, storage mapping, execution chains); `Caldera Engine Tier 1 Cascading Loops Design.md` for the Tier 1 loop spec; [`Caldera Engine Enrichment Loops & Character Intelligence.md`](docs/Caldera%20Engine%20Enrichment%20Loops%20&%20Character%20Intelligence.md) for the layered enrichment model + character-profile/database direction; [`Caldera Engine Human Annotation Guidelines.md`](docs/Caldera%20Engine%20Human%20Annotation%20Guidelines.md) for gold-standard creation
 *   `voice_synthesis_testing/`: Audio benchmarking, evaluations, and QA metrics
 *   `nlp-testing/`: Older (pre-Tier-system) API integration and experimentation notebooks; superseded by `src/llm_client.py`, kept for reference
