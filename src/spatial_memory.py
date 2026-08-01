@@ -144,12 +144,22 @@ class MemPalace:
         `BaseException` (re-raising real interrupts) so this always degrades to the
         NumPy similarity fallback instead of crashing the pipeline."""
         try:
-            self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+            # A CALDERA_CHROMA_HOST env points at a ChromaDB *server* (e.g. the
+            # `chroma` service on the docker network); otherwise use the embedded
+            # persistent store. Lets us run chroma as its own DB container without
+            # a code change -- just set the env.
+            chroma_host = os.environ.get("CALDERA_CHROMA_HOST")
+            if chroma_host:
+                self.chroma_client = chromadb.HttpClient(
+                    host=chroma_host, port=int(os.environ.get("CALDERA_CHROMA_PORT", "8000")))
+                logger.info(f"ChromaDB server client initialized -> {chroma_host}.")
+            else:
+                self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+                logger.info("ChromaDB Vector Store initialized successfully.")
             self.chroma_collection = self.chroma_client.get_or_create_collection(
                 name="mempalace_timbre_memory",
                 metadata={"hnsw:space": "cosine"} # Use cosine similarity for timbre distance
             )
-            logger.info("ChromaDB Vector Store initialized successfully.")
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:

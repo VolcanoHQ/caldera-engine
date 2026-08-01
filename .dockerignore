@@ -1,0 +1,40 @@
+# Keep the build context small. Small runtime assets under data/ (voice_references,
+# sfx, ambient, voice_marketplace) are intentionally NOT excluded -- they're baked in.
+
+# VCS / caches
+.git/
+.gitignore
+**/__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.mypy_cache/
+
+# Secrets -- injected at runtime via env_file, never baked
+.env
+
+# Big / state / generated data -> runtime volumes, not baked (also starts the
+# container with a FRESH mempalace so no corrupt chroma store)
+data/corpus/
+data/mempalace/
+data/generated_audio/
+data/generated_images/
+data/processed/
+data/uploads/
+data/render_jobs/
+data/outbox/
+data/qdrant_test/
+data/qdrant_db/
+data/llm_call_audit.jsonl
+data/llm_usage_state.json
+scratch/
+
+# Heavy dev/test trees not needed at runtime
+voice_synthesis_testing/
+nlp-testing/
+validation/output/
+
+# Local venvs
+venv/
+.venv/
+env/

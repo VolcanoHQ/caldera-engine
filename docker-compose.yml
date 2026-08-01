@@ -1,0 +1,68 @@
+# Caldera Engine — local deploy.
+#
+#   docker compose up --build              # app only (embedded chroma) -- default
+#   docker compose --profile db up --build # also start the ChromaDB server container
+#
+# GPU: the reservation below hands the host NVIDIA GPU to the container (needs the
+# NVIDIA Container Toolkit on the host). Remove that block for CPU-only hosts and
+# rebuild with --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu.
+
+services:
+  caldera:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TORCH_INDEX: https://download.pytorch.org/whl/cu121
+    image: caldera-engine:latest
+    ports:
+      - "8082:8082"
+    env_file:
+      - .env                     # LLM keys (GEMINI_API_KEY, GROQ_API_KEY, ...)
+    environment:
+      HF_HOME: /app/.cache/huggingface
+      # Point at the chroma DB container instead of the embedded store
+      # (uncomment together with `--profile db`):
+      # CALDERA_CHROMA_HOST: chroma
+      # CALDERA_CHROMA_PORT: "8000"
+    volumes:
+      - caldera-data:/app/data        # corpus/pipeline, mempalace, uploads, renders
+      - caldera-scratch:/app/scratch  # render workspace + outputs
+      - caldera-cache:/app/.cache     # HF / TTS model cache (persists across rebuilds)
+    networks:
+      - caldera-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8082/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    restart: unless-stopped
+
+  # Optional ChromaDB server as its own DB container on the shared network.
+  # Enable with `--profile db`, then set CALDERA_CHROMA_HOST=chroma above.
+  chroma:
+    image: chromadb/chroma:latest
+    profiles: ["db"]
+    volumes:
+      - caldera-chroma:/data
+    networks:
+      - caldera-net
+    restart: unless-stopped
+
+networks:
+  caldera-net:
+    driver: bridge
+
+volumes:
+  caldera-data:
+  caldera-scratch:
+  caldera-cache:
+  caldera-chroma:
