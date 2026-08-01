@@ -178,4 +178,24 @@ def build_character_profiles(book: str) -> Optional[str]:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"profile_version": CHARACTER_PROFILE_VERSION, "characters": profiles}, f, indent=2)
     os.replace(tmp, out_path)
+
+    _ingest_registry(book, profiles)
     return out_path
+
+
+def _ingest_registry(book: str, profiles: List[Dict[str, Any]]) -> None:
+    """Index this book's canonical characters into the cross-manuscript registry.
+    Derived + rebuildable + additive: a registry failure must never break profile
+    building, so it is best-effort. Applies the per-book loopE alias merges when
+    present (collapsing e.g. the King's aliases into one character)."""
+    try:
+        from src.character_registry import CharacterRegistry, load_alias_merges
+        merge_path = os.path.join("data", "corpus", "pipeline", book, "tier1", "loopE_llm_alias_merges.json")
+        loop_e = json.load(open(merge_path, encoding="utf-8")) if os.path.exists(merge_path) else []
+        registry = CharacterRegistry()
+        try:
+            registry.ingest_book(book, book, profiles, merges=load_alias_merges(loop_e))
+        finally:
+            registry.close()
+    except Exception:
+        pass
