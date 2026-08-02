@@ -36,6 +36,7 @@ from src.models import (
     ManuscriptManifest
 )
 from src.book_structure import materialize_book_structure_from_tier1
+from src.deterministic_attribution import attribute_scene
 
 _DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
@@ -265,9 +266,13 @@ TEXT BLOCK TO AUDIT:
     # Tiny quoted fragments (single letters/symbols, e.g. a deciphered watermark's
     # "E" "g" "P") are quoted material being read, not attributable dialogue --
     # leave them on Tier 1 defaults rather than asking the LLM to attribute them.
+    # Skip lines the deterministic tag pass already resolved (character != Narrator):
+    # the LLM fills only the genuinely ambiguous remainder, cutting calls and tokens.
     dialogue_indices = [
         i for i, l in enumerate(lines)
-        if l.segment_type == "dialogue" and len(re.sub(r"[^A-Za-z0-9]", "", l.text)) >= 3
+        if l.segment_type == "dialogue"
+        and len(re.sub(r"[^A-Za-z0-9]", "", l.text)) >= 3
+        and (l.character or "Narrator") == "Narrator"
     ]
     if not dialogue_indices:
         return lines, clean_issues, []
@@ -2010,6 +2015,18 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
                     "scene_id": scene_id,
                     "lines": [line.model_dump() for line in lines]
                 })
+
+                # Deterministic tag-based attribution (zero-LLM) BEFORE any LLM pass:
+                # explicit dialogue tags ("said Holmes") resolve their speaker for free,
+                # so the LLM spends calls only on ambiguous lines -- and quota-starved
+                # scenes still get their tagged speakers. No-op offline (no dialogue lines).
+                try:
+                    det_stats = attribute_scene(lines, roster=global_roster)
+                    if det_stats.attributed:
+                        _sig = ", ".join(f"{k}:{v}" for k, v in det_stats.by_signal.items())
+                        print(f"     [Det-Attr] Scene {total_scenes} -> {det_stats.attributed}/{det_stats.dialogue_total} dialogue lines from explicit tags ({_sig}).")
+                except Exception as e:
+                    logger.warning(f"Deterministic attribution failed for {scene_id}, continuing: {e}")
 
                 if scene_id in scene_omits:
                     print(f"     [Omit] Scene {scene_id} excluded from manifest by console override.")

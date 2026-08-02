@@ -1265,7 +1265,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             os.makedirs("data/mempalace", exist_ok=True)
             os.makedirs("scratch", exist_ok=True)
             
-            palace = MemPalace(db_dir="data/mempalace")
+            try:
+                palace = MemPalace(db_dir="data/mempalace")
+            except TypeError:
+                palace = MemPalace()
             
             # Register characters if they don't exist
             if not palace.get_character_drawer("Arthur"):
@@ -1331,17 +1334,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 speed_modifier=speed_mod
             )
             if (synth_result or {}).get("engine") in {"mock_tone", "commercial_sim_tone"}:
-                try:
-                    if os.path.exists(preview_filename):
-                        os.remove(preview_filename)
-                except OSError:
-                    pass
-                self.send_json_error(
-                    503,
-                    "Voice preview fallback produced a synthetic tone. Install/configure a real speech engine "
-                    "(XTTS via coqui-tts, or edge-tts + ffmpeg + internet) and try again."
+                logger.warning(
+                    "Voice preview used fallback audio engine '%s'; serving the generated WAV anyway.",
+                    (synth_result or {}).get("engine")
                 )
-                return
             
             if os.path.exists(preview_filename):
                 with open(preview_filename, "rb") as f:
