@@ -107,6 +107,16 @@ class MemPalace:
             cursor.execute("ALTER TABLE rooms ADD COLUMN confidence REAL DEFAULT 1.0")
         except Exception:
             pass
+
+        # Ensure finetuned_checkpoint_dir exists for older schemas -- nullable;
+        # populated once src/voice_finetune.py finishes a per-character XTTS
+        # fine-tune job. NULL means "use zero-shot conditioning on
+        # voice_ref_path" (the original/default behavior), so this column is
+        # purely additive and never required.
+        try:
+            cursor.execute("ALTER TABLE drawers ADD COLUMN finetuned_checkpoint_dir TEXT")
+        except Exception:
+            pass
         
         # Table 4: Emotional Ref Indexes (For granular emotional similarity fallbacks)
         cursor.execute("""
@@ -229,7 +239,7 @@ class MemPalace:
         """Retrieves raw files, base embedding and modulation configs for a character Drawer."""
         cursor = self.conn.cursor()
         cursor.execute("""
-        SELECT voice_ref_path, modulation_config_json, base_embedding 
+        SELECT voice_ref_path, modulation_config_json, base_embedding, finetuned_checkpoint_dir
         FROM drawers WHERE character_name = ?;
         """, (character_name,))
         row = cursor.fetchone()
@@ -237,7 +247,7 @@ class MemPalace:
         if not row:
             return None
             
-        ref_path, modulation_json, base_blob = row
+        ref_path, modulation_json, base_blob, finetuned_checkpoint_dir = row
         base_embedding = None
         if base_blob:
             base_embedding = np.frombuffer(base_blob, dtype=np.float32).tolist()
@@ -246,8 +256,31 @@ class MemPalace:
             "character_name": character_name,
             "voice_ref_path": ref_path,
             "modulation_config": json.loads(modulation_json),
-            "base_embedding": base_embedding
+            "base_embedding": base_embedding,
+            "finetuned_checkpoint_dir": finetuned_checkpoint_dir,
         }
+
+    def set_finetuned_checkpoint(self, character_name: str, checkpoint_dir: Optional[str]) -> bool:
+        """Pins (or clears, with checkpoint_dir=None) a per-character fine-tuned
+        XTTS checkpoint directory, produced by src/voice_finetune.py once a
+        voice actor's accumulated recordings cross the minimum corpus duration
+        for training. voice_synthesizer.py checks this before falling back to
+        zero-shot conditioning on voice_ref_path."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                "UPDATE drawers SET finetuned_checkpoint_dir = ? WHERE character_name = ?",
+                (checkpoint_dir, character_name),
+            )
+            if cursor.rowcount == 0:
+                logger.warning(f"set_finetuned_checkpoint: no drawer registered for '{character_name}' yet.")
+                return False
+            self.conn.commit()
+            logger.info(f"Drawer '{character_name}' finetuned_checkpoint_dir -> {checkpoint_dir}")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting finetuned checkpoint for '{character_name}': {e}")
+            return False
 
     def save_confirmed_merge(self, book_filename: str, original_name: str, canonical_name: str, is_confirmed: bool, confidence_score: float) -> bool:
         """Saves or updates a user-confirmed merge decision."""

@@ -14,6 +14,9 @@ import json
 import logging
 import os
 import re
+import shutil
+import importlib.util
+import fnmatch
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +30,8 @@ from src.book_structure import (
     save_book_structure,
     split_section,
 )
+from src.feedback_events import event_type_for_operation, record_feedback_event
+from src.attribution_reduction import build_performance_script, load_performance_scene_lines
 from src.book_structure_adapter import (
     chapter_lookup,
     load_line_payloads as adapter_load_line_payloads,
@@ -102,10 +107,16 @@ def _load_lines(book: str) -> List[Dict[str, Any]]:
 
 
 def _get_marketplace():
+    """Lazy singleton for the Voice Marketplace client. The marketplace now
+    lives in the standalone "Volcano Studios Voice Marketplace" product (its
+    own repo/container, reached over HTTP -- see src/marketplace_client.py
+    and MARKETPLACE_API_URL in .env); MarketplaceClient is duck-type
+    compatible with the old in-process src.voice_marketplace.VoiceMarketplace,
+    so nothing below this line needs to change."""
     global _MARKETPLACE
     if _MARKETPLACE is None:
-        from src.voice_marketplace import VoiceMarketplace
-        _MARKETPLACE = VoiceMarketplace()
+        from src.marketplace_client import MarketplaceClient
+        _MARKETPLACE = MarketplaceClient()
     return _MARKETPLACE
 
 
@@ -121,11 +132,16 @@ def _get_drawer_info(character: str) -> Optional[Dict[str, Any]]:
 
 def _character_profiles(book: str) -> Dict[str, Dict[str, Any]]:
     profiles = _load_json(os.path.join(_tier3_dir(book), "character_profiles.json")) or []
-    return {
+    out = {
         item.get("name", ""): item
         for item in profiles
         if isinstance(item, dict) and item.get("name")
     }
+    performance_script = _load_json(os.path.join(_tier3_dir(book), "performance_script.json")) or {}
+    for item in performance_script.get("character_performance_profiles", []):
+        if isinstance(item, dict) and item.get("character"):
+            out.setdefault(item["character"], item)
+    return out
 
 
 def _character_voice_query(book: str, character: str, explicit_query: str = "") -> str:
@@ -135,6 +151,15 @@ def _character_voice_query(book: str, character: str, explicit_query: str = "") 
     profile_description = str(profile.get("visual_description") or profile.get("description") or "").strip()
     if profile_description:
         return f"{character}: {profile_description}"
+    if character == "Narrator":
+        # The Narrator never gets a character_profiles entry (it's not a cast
+        # member), so fall back to the book bible's tone/genre/era -- this is
+        # what Express Mode's one-click "Suggest from Marketplace" relies on.
+        bible = _load_json(os.path.join(_tier3_dir(book), "book_bible.json")) or {}
+        bits = [bible.get("tone"), bible.get("genre"), bible.get("era_setting")]
+        bits = [b.strip() for b in bits if isinstance(b, str) and b.strip()]
+        if bits:
+            return f"Narrator voice for a {', '.join(bits)} story"
     return f"{character} audiobook character voice"
 
 
@@ -145,6 +170,118 @@ def _write_json(path: str, payload: Any) -> str:
         json.dump(payload, handle, indent=2)
     os.replace(tmp, path)
     return path
+
+
+def _load_performance_script(book: str) -> Dict[str, Any]:
+    path = os.path.join(_tier3_dir(book), "performance_script.json")
+    return _load_json(path) or {}
+
+
+def _profile_snapshot_path(book: str) -> str:
+    return os.path.join(_tier3_dir(book), "character_performance_profiles.json")
+
+
+def _profile_memory_log_path(book: str) -> str:
+    return os.path.join(_tier3_dir(book), "character_performance_profile_memory.jsonl")
+
+
+def _sync_profiles_to_mempalace(book: str, profiles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    status = {"attempted": True, "updated": 0, "skipped": 0, "errors": []}
+    from src.spatial_memory import MemPalace
+
+    palace = MemPalace(use_chroma=False)
+    try:
+        for item in profiles:
+            character = str(item.get("character") or "").strip()
+            profile = item.get("performance_profile") or {}
+            if not character or not isinstance(profile, dict):
+                status["skipped"] += 1
+                continue
+            drawer = palace.get_character_drawer(character)
+            if not drawer:
+                status["skipped"] += 1
+                continue
+            voice_ref = str(drawer.get("voice_ref_path") or "").strip()
+            if not voice_ref:
+                status["skipped"] += 1
+                continue
+
+            pace = str(profile.get("pace", "conversational"))
+            pace_speed = {"slow": 0.92, "deliberate": 0.95, "conversational": 1.0, "fast": 1.08, "hurried": 1.1, "breathless": 1.12}
+            speed = pace_speed.get(pace, 1.0)
+            energy = str(profile.get("energy", "alert"))
+            energy_bias = {"tired": -0.2, "relaxed": -0.1, "alert": 0.0, "energized": 0.18, "hyperactive": 0.3}.get(energy, 0.0)
+            authority = float(profile.get("authority", 0.5))
+            volume = max(0.8, min(1.2, 0.9 + authority * 0.25))
+            confidence = float(profile.get("confidence", 0.65))
+            prosody = max(0.55, min(0.95, 0.62 + confidence * 0.3))
+            pitch = -1.2 + authority * 2.4
+
+            ok = palace.register_character(
+                character,
+                voice_ref,
+                speed=speed,
+                pitch=pitch,
+                volume=volume,
+                energy_bias=energy_bias,
+                prosody_stabilization=prosody,
+                base_embedding=drawer.get("base_embedding"),
+            )
+            if ok:
+                status["updated"] += 1
+            else:
+                status["errors"].append({"character": character, "error": "register_character_failed"})
+    finally:
+        palace.close()
+    return status
+
+
+def persist_character_performance_profiles(
+    book: str,
+    *,
+    source: str,
+    sync_mempalace: bool = False,
+) -> Optional[Dict[str, Any]]:
+    script = _load_performance_script(book)
+    profiles = script.get("character_performance_profiles")
+    if not isinstance(profiles, list):
+        return None
+
+    snapshot = {
+        "book": book,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "profile_count": len(profiles),
+        "profiles": profiles,
+        "performance_intelligence": script.get("performance_intelligence", {}),
+    }
+    snapshot_path = _write_json(_profile_snapshot_path(book), snapshot)
+
+    log_path = _profile_memory_log_path(book)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "captured_at": snapshot["captured_at"],
+                    "source": source,
+                    "profile_count": len(profiles),
+                    "performance_intelligence_version": (script.get("performance_intelligence") or {}).get("version"),
+                }
+            )
+            + "\n"
+        )
+
+    mem_status = {"attempted": False, "updated": 0, "skipped": len(profiles), "errors": []}
+    if sync_mempalace:
+        mem_status = _sync_profiles_to_mempalace(book, profiles)
+
+    return {
+        "snapshot_path": snapshot_path,
+        "memory_log_path": log_path,
+        "profile_count": len(profiles),
+        "mempalace": mem_status,
+    }
 
 
 def _resolve_source_path(book: str, source_hint: str = "") -> Optional[str]:
@@ -253,6 +390,141 @@ def _invalidate_tier3_artifacts(book: str) -> List[str]:
     return cleared
 
 
+def _invalidate_downstream_artifacts(book: str) -> Dict[str, Any]:
+    cleared_tier3 = _invalidate_tier3_artifacts(book)
+    cleared_previews: List[str] = []
+    slug = re.sub(r"[^A-Za-z0-9_\-]", "", book)
+    for folder, pattern in (("scratch/renders", f"{book}_tier*"), ("scratch/tier_previews", f"{slug}_tier*")):
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            if fnmatch.fnmatch(name, pattern):
+                path = os.path.join(folder, name)
+                try:
+                    os.remove(path)
+                    cleared_previews.append(path)
+                except OSError:
+                    continue
+    return {"tier3": cleared_tier3, "renders": cleared_previews}
+
+
+def normalize_book_chapter_titles(book: str) -> Optional[Dict[str, Any]]:
+    from src.tier_1_parser import _normalize_chapter_title
+
+    book = _safe_book(book)
+    if not book:
+        return None
+
+    structure = load_structure(book)
+    updated = structure.model_copy(deep=True)
+    renamed = 0
+    for section in updated.sections:
+        if section.content_type != "chapter" or section.status != "active":
+            continue
+        normalized = _normalize_chapter_title(section.title)
+        if normalized and normalized != section.title:
+            section.title = normalized
+            section.updated_at = datetime.now(timezone.utc).isoformat()
+            renamed += 1
+    if renamed:
+        updated.updated_at = datetime.now(timezone.utc).isoformat()
+        save_book_structure(updated, _book_structure_path(book))
+        structure = updated
+
+    legacy_path = os.path.join(_tier1_dir(book), "loop2_chapters.json")
+    legacy = _load_json(legacy_path)
+    legacy_renamed = 0
+    if isinstance(legacy, list):
+        for chapter in legacy:
+            if not isinstance(chapter, dict):
+                continue
+            title = str(chapter.get("title", ""))
+            normalized = _normalize_chapter_title(title)
+            if normalized and normalized != title:
+                chapter["title"] = normalized
+                legacy_renamed += 1
+        if legacy_renamed:
+            _write_json(legacy_path, legacy)
+
+    payloads = adapter_load_line_payloads(book)
+    hierarchy_data = structure_to_gui_hierarchy(structure, line_payloads=payloads)
+    slug = re.sub(r"[^a-zA-Z0-9_\-]", "", book)
+    cache_dir = os.path.join("data", "processed", slug, "Tier_1")
+    hierarchy_cache = _write_json(os.path.join(cache_dir, "hierarchy.json"), hierarchy_data)
+
+    return {
+        "book": book,
+        "renamed_chapters": renamed,
+        "renamed_legacy_chapters": legacy_renamed,
+        "hierarchy_cache": hierarchy_cache,
+        "structure": structure.model_dump(),
+    }
+
+
+def environment_preflight() -> Dict[str, Any]:
+    from src import boot_check
+
+    checks: List[Dict[str, str]] = []
+    for module_name, label, detail in (
+        ("edge_tts", "edge_tts", "Voice preview fallback-to-tone protection requires this for natural cloud TTS."),
+        ("qdrant_client", "qdrant_client", "Director voice search/casting integrations require this package."),
+    ):
+        present = importlib.util.find_spec(module_name) is not None
+        checks.append({
+            "check": label,
+            "status": "ok" if present else "warn",
+            "detail": "installed" if present else f"missing. {detail}",
+        })
+
+    ffmpeg_path = shutil.which("ffmpeg")
+    checks.append({
+        "check": "ffmpeg_binary",
+        "status": "ok" if ffmpeg_path else "fail",
+        "detail": ffmpeg_path or "ffmpeg not found on PATH",
+    })
+
+    boot = boot_check.run_boot_checks(fast=True)
+    worst = "ok"
+    for entry in [*checks, *boot.get("checks", [])]:
+        if entry.get("status") == "fail":
+            worst = "fail"
+            break
+        if entry.get("status") == "warn":
+            worst = "warn"
+    return {
+        "status": worst,
+        "checks": checks,
+        "boot": boot,
+    }
+
+
+def tier_readiness(book: str) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+    structure = load_structure(book)
+    readiness = structure_readiness(structure, require_analysis=True)
+    payloads = adapter_load_line_payloads(book)
+    has_lines = bool(payloads)
+    has_enriched_dialogue = any(
+        line.get("segment_type") == "dialogue"
+        and str(line.get("attribution_method", "Tier 1 Default")) != "Tier 1 Default"
+        for payload in payloads
+        for line in payload.get("lines", [])
+    )
+    t3 = _tier3_dir(book)
+    has_tier3 = all(
+        os.path.exists(os.path.join(t3, name))
+        for name in ("production_script.json", "sound_design.json", "dramatization.json")
+    )
+    return {
+        "book": book,
+        "tier1": {"ready": readiness.get("ok", False) and has_lines, "message": "Narrator flow ready" if has_lines else "No line artifacts yet"},
+        "tier2": {"ready": has_enriched_dialogue, "message": "Attributed cast ready" if has_enriched_dialogue else "Run Tier 2 enrichment"},
+        "tier3": {"ready": has_tier3, "message": "Director artifacts ready" if has_tier3 else "Run director refresh"},
+    }
+
+
 def get_book_structure(book: str) -> Optional[Dict[str, Any]]:
     book = _safe_book(book)
     if not book:
@@ -270,6 +542,24 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
     if not book:
         return None
     structure = load_structure(book)
+
+    # Capture before state for feedback intelligence
+    primary_section_id = (
+        payload.get("section_id")
+        or (payload.get("section_ids") or [None])[0]
+    )
+    before_section = next(
+        (s for s in structure.sections if s.section_id == primary_section_id),
+        None,
+    )
+    before_content_type = before_section.content_type if before_section else "unknown"
+    before_snapshot     = before_section.model_dump() if before_section else {}
+    before_version      = structure.structure_version
+    before_confidence   = (
+        (before_section.metadata or {}).get("boundary_v2", {}).get("confidence")
+        if before_section else None
+    )
+
     if action == "rename_section":
         updated = rename_section(structure, payload.get("section_id", ""), str(payload.get("title", "")))
     elif action == "reorder_section":
@@ -292,18 +582,39 @@ def apply_structure_edit(book: str, action: str, payload: Dict[str, Any]) -> Opt
         raise ValueError(f"Unknown structure action: {action}")
 
     save_book_structure(updated, _book_structure_path(book))
+    invalidated = _invalidate_downstream_artifacts(book)
+
+    # Emit feedback event for learning intelligence
+    after_section = next(
+        (s for s in updated.sections if s.section_id == primary_section_id),
+        None,
+    )
+    evt_type = event_type_for_operation(action, before_content_type)
+    record_feedback_event(
+        event_type=evt_type,
+        book_id=book,
+        structure_version=before_version,
+        algorithm_name="canonical_structure",
+        algorithm_version="scene_v2",
+        before=before_snapshot,
+        after=(after_section.model_dump() if after_section
+               else {"action": action, "payload": payload}),
+        confidence=before_confidence,
+    )
+
     return {
         "book": book,
         "action": action,
         "structure": updated.model_dump(),
         "readiness": structure_readiness(updated, require_analysis=True),
+        "invalidated": invalidated,
     }
-
 
 def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
     book = _safe_book(book)
     if not book:
         return None
+    normalized = normalize_book_chapter_titles(book)
     structure = load_structure(book)
     source_path = _resolve_source_path(book, structure.source_file)
     if not source_path:
@@ -330,10 +641,11 @@ def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
     profile_data = profiler.profile_book(source_path, hierarchy_data=hierarchy_data)
     profile_cache = os.path.join(cache_dir, "profile.json")
     profiler.save_profile(profile_data, profile_cache)
-    cleared_tier3 = _invalidate_tier3_artifacts(book)
+    invalidated = _invalidate_downstream_artifacts(book)
 
     return {
         "book": book,
+        "normalized": normalized,
         "structure": refreshed_structure.model_dump(),
         "readiness": structure_readiness(refreshed_structure, require_analysis=True),
         "hierarchy": hierarchy_data,
@@ -343,7 +655,7 @@ def refresh_book_structure(book: str) -> Optional[Dict[str, Any]]:
             "loop4_lines_enriched": enriched_path,
             "hierarchy_cache": hierarchy_cache,
             "profile_cache": profile_cache,
-            "cleared_tier3": cleared_tier3,
+            "invalidated": invalidated,
         },
     }
 
@@ -379,6 +691,12 @@ def refresh_book_director(
         os.path.join(tier3_dir, "canonical_manifest.json"),
         manifest.model_dump(),
     )
+    performance_script_path = build_performance_script(manifest_path)
+    profile_persist = persist_character_performance_profiles(
+        book,
+        source="director_refresh",
+        sync_mempalace=sync_mempalace,
+    )
 
     from src import scene_director
 
@@ -403,11 +721,41 @@ def refresh_book_director(
         "director": direction_result,
         "artifacts": {
             "manifest": manifest_path,
+            "performance_script": performance_script_path,
+            "character_performance_profiles": (profile_persist or {}).get("snapshot_path"),
+            "character_performance_profile_memory": profile_persist,
             "sound_design": sound_design_path,
             "dramatization": dramatization_path,
             "character_profiles": character_profiles_path,
             "qc_report": qc_report_path,
         },
+    }
+
+
+def rebuild_book_pipeline(
+    book: str,
+    *,
+    include_qc: bool = False,
+    sync_mempalace: bool = False,
+) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+    normalized = normalize_book_chapter_titles(book)
+    structure_refresh = refresh_book_structure(book)
+    director_refresh = refresh_book_director(
+        book,
+        refresh_structure=False,
+        include_qc=include_qc,
+        sync_mempalace=sync_mempalace,
+    )
+    readiness = tier_readiness(book)
+    return {
+        "book": book,
+        "normalized": normalized,
+        "structure_refresh": structure_refresh,
+        "director_refresh": director_refresh,
+        "tier_readiness": readiness,
     }
 
 
@@ -428,11 +776,13 @@ def list_books() -> List[Dict[str, Any]]:
         entry = {
             "book": name,
             "scenes": scenes_count,
+            "tier_readiness": tier_readiness(name),
             "artifacts": {
                 "enriched": os.path.exists(os.path.join(t1, "loop4_lines_enriched.json")),
                 "alias_merges": os.path.exists(os.path.join(t1, "loopE_llm_alias_merges.json")),
                 "sfx_cues": os.path.exists(os.path.join(t1, "loopE_llm_sfx_cues.json")),
                 "production_script": os.path.exists(os.path.join(t3, "production_script.json")),
+                "performance_script": os.path.exists(os.path.join(t3, "performance_script.json")),
                 "sound_design": os.path.exists(os.path.join(t3, "sound_design.json")),
                 "dramatization": os.path.exists(os.path.join(t3, "dramatization.json")),
                 "character_profiles": os.path.exists(os.path.join(t3, "character_profiles.json")),
@@ -507,7 +857,9 @@ def scene_detail(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
         return None
     t1, t3 = _tier1_dir(book), _tier3_dir(book)
     structure = load_structure(book)
-    payload_lines = scene_lines(structure, scene_id, line_payloads=adapter_load_line_payloads(book))
+    payload_lines = load_performance_scene_lines(book, scene_id)
+    if not payload_lines:
+        payload_lines = scene_lines(structure, scene_id, line_payloads=adapter_load_line_payloads(book))
     if not payload_lines:
         return None
     overrides = load_speaker_overrides(book)
@@ -522,9 +874,13 @@ def scene_detail(book: str, scene_id: str) -> Optional[Dict[str, Any]]:
             "segment_type": l.get("segment_type"),
             "text": l.get("text"),
             "emotion": l.get("emotion"),
+            "emotion_profile": l.get("emotion_profile"),
+            "performance_intelligence": l.get("performance_intelligence"),
             "confidence": l.get("confidence"),
             "attribution_method": l.get("attribution_method"),
             "utterance_type": l.get("utterance_type", "speech"),
+            "attribution_reduction": l.get("attribution_reduction"),
+            "attribution_delivery": l.get("attribution_delivery"),
             "wav": _line_wav_path(l),
         })
     section = resolve_scene(structure, scene_id)
@@ -581,6 +937,17 @@ def save_speaker_override(book: str, line_id: str, character: str,
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(overrides, f, indent=2)
     os.replace(tmp, path)
+
+    structure = load_structure(book)
+    record_feedback_event(
+        event_type="speaker_attribution_fixed",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="speaker_attribution",
+        algorithm_version="tier2",
+        before={"line_id": line_id, "scene_id": scene_id},
+        after={"line_id": line_id, "scene_id": scene_id, "character": character or None},
+    )
     return {"overrides": len(overrides), "line_id": line_id, "character": character or None}
 
 
@@ -598,6 +965,204 @@ def apply_speaker_overrides(lines: List[Dict[str, Any]], overrides: Dict[str, Di
             l["speaker_locked"] = True
             applied += 1
     return applied
+
+
+def load_attribution_reduction_overrides(book: str) -> Dict[str, Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return {}
+    return _load_json(os.path.join(_tier3_dir(book), "attribution_reduction_overrides.json")) or {}
+
+
+def _find_attribution_reduction_entry(book: str, scene_id: str, line_id: str) -> Dict[str, Any]:
+    path = os.path.join(_tier3_dir(book), "performance_script.json")
+    data = _load_json(path) or {}
+    for item in data.get("reductions", []):
+        if item.get("scene_id") == scene_id and item.get("source_line_id") == line_id:
+            return item
+    return {}
+
+
+def load_character_performance_profile_overrides(book: str) -> Dict[str, Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return {}
+    return _load_json(os.path.join(_tier3_dir(book), "character_performance_profile_overrides.json")) or {}
+
+
+def _find_character_performance_profile(book: str, character: str) -> Dict[str, Any]:
+    path = os.path.join(_tier3_dir(book), "performance_script.json")
+    data = _load_json(path) or {}
+    for item in data.get("character_performance_profiles", []):
+        if item.get("character") == character:
+            return item
+    return {}
+
+
+def get_character_performance_profiles(
+    book: str,
+    *,
+    refresh_if_missing: bool = False,
+    sync_mempalace: bool = False,
+) -> Optional[Dict[str, Any]]:
+    book = _safe_book(book)
+    if not book:
+        return None
+
+    script = _load_performance_script(book)
+    if not script.get("character_performance_profiles") and refresh_if_missing:
+        manifest_path = os.path.join(_tier3_dir(book), "canonical_manifest.json")
+        if not os.path.exists(manifest_path):
+            structure = load_structure(book)
+            line_payloads = adapter_load_line_payloads(book)
+            manifest = structure_to_manifest(structure, line_payloads=line_payloads)
+            manifest_path = _write_json(manifest_path, manifest.model_dump())
+        build_performance_script(manifest_path)
+        script = _load_performance_script(book)
+
+    profiles = script.get("character_performance_profiles")
+    if not isinstance(profiles, list):
+        return {
+            "book": book,
+            "profiles": [],
+            "profile_count": 0,
+            "performance_intelligence": script.get("performance_intelligence", {}),
+            "snapshot": None,
+        }
+
+    snapshot = persist_character_performance_profiles(
+        book,
+        source="api_read",
+        sync_mempalace=sync_mempalace,
+    )
+    return {
+        "book": book,
+        "profiles": profiles,
+        "profile_count": len(profiles),
+        "performance_intelligence": script.get("performance_intelligence", {}),
+        "snapshot": snapshot,
+    }
+
+
+def save_attribution_reduction_override(
+    book: str,
+    scene_id: str,
+    line_id: str,
+    *,
+    decision: str,
+    classification: str = "",
+    note: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Capture director correction of attribution reduction decisions."""
+    book = _safe_book(book)
+    if not book or not re.fullmatch(r"[A-Za-z0-9_]+", scene_id or "") or not line_id:
+        return None
+    if decision not in ("restore_removed", "remove_preserved", "change_classification"):
+        return None
+
+    overrides = load_attribution_reduction_overrides(book)
+    scene_bucket = overrides.setdefault(scene_id, {})
+    scene_bucket[line_id] = {
+        "decision": decision,
+        "classification": classification or None,
+        "note": (note or "").strip()[:200] or None,
+        "at": __import__("time").time(),
+    }
+    os.makedirs(_tier3_dir(book), exist_ok=True)
+    path = os.path.join(_tier3_dir(book), "attribution_reduction_overrides.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(tmp, path)
+
+    structure = load_structure(book)
+    manifest_path = os.path.join(_tier3_dir(book), "canonical_manifest.json")
+    if not os.path.exists(manifest_path):
+        line_payloads = adapter_load_line_payloads(book)
+        manifest = structure_to_manifest(structure, line_payloads=line_payloads)
+        manifest_path = _write_json(manifest_path, manifest.model_dump())
+    build_performance_script(manifest_path)
+
+    before = _find_attribution_reduction_entry(book, scene_id, line_id)
+    after = {
+        "scene_id": scene_id,
+        "source_line_id": line_id,
+        "decision": decision,
+        "classification": classification or None,
+        "note": (note or "").strip()[:200] or None,
+    }
+    record_feedback_event(
+        event_type="attribution_reduction_corrected",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="attribution_reduction",
+        algorithm_version="attribution_reduction_v1",
+        before=before,
+        after=after,
+        confidence=before.get("confidence") if isinstance(before, dict) else None,
+    )
+    return {"scene_id": scene_id, "line_id": line_id, "decision": decision, "classification": classification or None}
+
+
+def save_character_performance_profile_override(
+    book: str,
+    character: str,
+    *,
+    performance_profile: Dict[str, Any],
+    note: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Capture director correction to a character performance profile."""
+    book = _safe_book(book)
+    character = (character or "").strip()
+    if not book or not character or not isinstance(performance_profile, dict):
+        return None
+    if not performance_profile:
+        return None
+
+    before_profile = _find_character_performance_profile(book, character)
+    overrides = load_character_performance_profile_overrides(book)
+    character_id = re.sub(r"[^a-z0-9]+", "_", character.lower()).strip("_") or character.lower()
+    overrides[character_id] = {
+        "character": character,
+        "performance_profile": performance_profile,
+        "note": (note or "").strip()[:200] or None,
+        "at": __import__("time").time(),
+    }
+    os.makedirs(_tier3_dir(book), exist_ok=True)
+    path = os.path.join(_tier3_dir(book), "character_performance_profile_overrides.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(overrides, f, indent=2)
+    os.replace(tmp, path)
+
+    structure = load_structure(book)
+    manifest_path = os.path.join(_tier3_dir(book), "canonical_manifest.json")
+    if not os.path.exists(manifest_path):
+        line_payloads = adapter_load_line_payloads(book)
+        manifest = structure_to_manifest(structure, line_payloads=line_payloads)
+        manifest_path = _write_json(manifest_path, manifest.model_dump())
+    build_performance_script(manifest_path)
+
+    after_profile = _find_character_performance_profile(book, character)
+
+    record_feedback_event(
+        event_type="character_performance_profile_corrected",
+        book_id=book,
+        structure_version=structure.structure_version,
+        algorithm_name="character_performance_profiles",
+        algorithm_version="character_profile_v1",
+        before=before_profile,
+        after={
+            "character": character,
+            "character_id": character_id,
+            "performance_profile": performance_profile,
+            "note": (note or "").strip()[:200] or None,
+        },
+        confidence=(before_profile.get("performance_profile") or {}).get("confidence")
+        if isinstance(before_profile, dict)
+        else None,
+    )
+    return {"character": character, "character_id": character_id, "updated_fields": sorted(performance_profile.keys())}
 
 
 def load_scene_overrides(book: str) -> Dict[str, Dict[str, Any]]:

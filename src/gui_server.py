@@ -11,6 +11,7 @@ import re
 import sys
 import json
 import time
+import hashlib
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,6 +71,36 @@ root_logger.addHandler(deque_handler)
 logger = logging.getLogger("StudioServer")
 
 TIER1_GUI_PIPELINE = "tier1_manifest_v1"
+
+
+def _feedback_hash(value: str) -> str:
+    if value is None:
+        value = ""
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:16]
+
+
+def _feedback_book_token(filename: str, tier: int) -> str:
+    stem = os.path.splitext(filename or "")[0].strip().lower()
+    return f"book_{_feedback_hash(f'{stem}|tier:{tier}')}"
+
+
+def _anonymized_line_payload(line: dict, *, filename: str, tier: int, line_id: str) -> dict:
+    raw_text = str(line.get("text") or line.get("dialogue") or "")
+    narr_before = str(line.get("narration_before") or "")
+    narr_after = str(line.get("narration_after") or "")
+    return {
+        "line_id": line_id,
+        "book_token": _feedback_book_token(filename, tier),
+        "tier": tier,
+        "character": line.get("character"),
+        "text_sha16": _feedback_hash(raw_text),
+        "text_chars": len(raw_text),
+        "narration_before_sha16": _feedback_hash(narr_before),
+        "narration_after_sha16": _feedback_hash(narr_after),
+        "emotion": line.get("emotion"),
+        "attribution_method": line.get("attribution_method"),
+        "anonymized": True,
+    }
 
 
 def _manifest_to_gui_hierarchy(manifest):
@@ -641,6 +672,17 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 if payload is None:
                     self.send_json_error(400, "Invalid book or character")
                     return
+            elif path == "/api/console/performance_profiles":
+                refresh_if_missing = (q("refresh") or "").strip().lower() in ("1", "true", "yes")
+                sync_mempalace = (q("sync_mempalace") or "").strip().lower() in ("1", "true", "yes")
+                payload = console_api.get_character_performance_profiles(
+                    q("book"),
+                    refresh_if_missing=refresh_if_missing,
+                    sync_mempalace=sync_mempalace,
+                )
+                if payload is None:
+                    self.send_json_error(400, "Invalid or unknown book")
+                    return
             elif path == "/api/console/progress":
                 payload = console_api.progress()
             elif path == "/api/console/trailer_scene":
@@ -692,6 +734,13 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         payload = boot_check.run_boot_checks(fast=True)
                 except Exception:
                     payload = boot_check.run_boot_checks(fast=True)
+            elif path == "/api/console/preflight":
+                payload = console_api.environment_preflight()
+            elif path == "/api/console/tier_readiness":
+                payload = console_api.tier_readiness(q("book"))
+                if payload is None:
+                    self.send_json_error(400, "Invalid or unknown book")
+                    return
             elif path == "/api/console/audio":
                 wav = console_api.resolve_audio(q("file"))
                 if not wav:
@@ -760,7 +809,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._auth_gate(path):
             return
-        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character"):
+        if path.startswith("/api/marketplace/") or path.startswith("/api/voicestudio/") or path in ("/api/console/correct_speaker", "/api/console/preview_tier", "/api/console/render", "/api/console/projects", "/api/console/project_update", "/api/console/mix_override", "/api/console/omit_scene", "/api/console/upload_source", "/api/console/delete_book", "/api/console/structure_edit", "/api/console/structure_refresh", "/api/console/director_refresh", "/api/console/director_cast_character", "/api/console/rebuild_all", "/api/console/normalize_chapters", "/api/console/attribution_override", "/api/console/performance_profile_override"):
             try:
                 content_length = int(self.headers.get('Content-Length') or 0)
                 body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length else {}
@@ -970,6 +1019,52 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"structure_edit error: {e}")
                     self.send_json_error(409, f"Structure edit error: {e}")
+            elif path == "/api/console/attribution_override":
+                from src import console_api
+                try:
+                    result = console_api.save_attribution_reduction_override(
+                        body.get("book", ""),
+                        body.get("scene_id", ""),
+                        body.get("line_id", ""),
+                        decision=str(body.get("decision", "")),
+                        classification=str(body.get("classification", "")),
+                        note=str(body.get("note", "")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid attribution override payload")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"attribution_override error: {e}")
+                    self.send_json_error(500, f"Attribution override error: {e}")
+            elif path == "/api/console/performance_profile_override":
+                from src import console_api
+                try:
+                    result = console_api.save_character_performance_profile_override(
+                        body.get("book", ""),
+                        str(body.get("character", "")),
+                        performance_profile=body.get("performance_profile", {}) or {},
+                        note=str(body.get("note", "")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid performance profile override payload")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"performance_profile_override error: {e}")
+                    self.send_json_error(500, f"Performance profile override error: {e}")
             elif path == "/api/console/structure_refresh":
                 from src import console_api
                 try:
@@ -1009,6 +1104,44 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     logger.error(f"director_refresh error: {e}")
                     self.send_json_error(409, f"Director refresh error: {e}")
+            elif path == "/api/console/rebuild_all":
+                from src import console_api
+                try:
+                    result = console_api.rebuild_book_pipeline(
+                        body.get("book", ""),
+                        include_qc=bool(body.get("include_qc")),
+                        sync_mempalace=bool(body.get("sync_mempalace")),
+                    )
+                    if result is None:
+                        self.send_json_error(400, "Invalid or unknown book")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"rebuild_all error: {e}")
+                    self.send_json_error(409, f"Rebuild-all error: {e}")
+            elif path == "/api/console/normalize_chapters":
+                from src import console_api
+                try:
+                    result = console_api.normalize_book_chapter_titles(body.get("book", ""))
+                    if result is None:
+                        self.send_json_error(400, "Invalid or unknown book")
+                        return
+                    resp = json.dumps(result).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.end_headers()
+                    self.wfile.write(resp)
+                except Exception as e:
+                    logger.error(f"normalize_chapters error: {e}")
+                    self.send_json_error(409, f"Normalize chapters error: {e}")
             elif path == "/api/console/director_cast_character":
                 from src import console_api
                 try:
@@ -1184,7 +1317,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             import uuid
             preview_filename = f"scratch/preview_{uuid.uuid4().hex}.wav"
             
-            synth.synthesize_line(
+            synth_result = synth.synthesize_line(
                 character_name=char_name,
                 dialogue_text=text,
                 target_emotion="Neutral",
@@ -1192,6 +1325,18 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 pitch_modifier=pitch_mod,
                 speed_modifier=speed_mod
             )
+            if (synth_result or {}).get("engine") in {"mock_tone", "commercial_sim_tone"}:
+                try:
+                    if os.path.exists(preview_filename):
+                        os.remove(preview_filename)
+                except OSError:
+                    pass
+                self.send_json_error(
+                    503,
+                    "Voice preview fallback produced a synthetic tone. Install/configure a real speech engine "
+                    "(XTTS via coqui-tts, or edge-tts + ffmpeg + internet) and try again."
+                )
+                return
             
             if os.path.exists(preview_filename):
                 with open(preview_filename, "rb") as f:
@@ -1300,7 +1445,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 
             response_data = {
                 "profile": profile_data,
-                "hierarchy": hierarchy_data
+                "hierarchy": hierarchy_data,
+                "active_tier": int(tier),
             }
             
             response = json.dumps(response_data).encode("utf-8")
@@ -1329,7 +1475,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
             # Analyze immediately through the canonical upload contract/Tier 1 path.
             profiler = ManuscriptProfiler(use_gpu=False, production_tier=int(tier))
-            hierarchy_data = build_gui_hierarchy(filepath, 1)
+            hierarchy_data = build_gui_hierarchy(filepath, int(tier))
             profile_data = profiler.profile_book(filepath, hierarchy_data=hierarchy_data)
             
             # Save cache
@@ -1349,6 +1495,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             response_data = success_response(result)
             response_data["profile"] = profile_data
             response_data["hierarchy"] = hierarchy_data
+            response_data["active_tier"] = int(tier)
             
             response = json.dumps(response_data).encode("utf-8")
             self.send_response(200)
@@ -1771,7 +1918,11 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 for item in feedback_data:
-                    if item.get("line_id") == line_id:
+                    if (
+                        item.get("line_id") == line_id
+                        and item.get("book_token") == _feedback_book_token(filename, tier)
+                        and item.get("tier") == tier
+                    ):
                         item["character"] = new_speaker
                         break
                 with open(feedback_file, "w", encoding="utf-8") as f:
@@ -1871,25 +2022,20 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     feedback_data = []
                     
             # Check if line already exists in feedback dataset
+            book_token = _feedback_book_token(filename, tier)
             existing_idx = -1
             for idx, item in enumerate(feedback_data):
-                if item.get("line_id") == line_id:
+                if item.get("line_id") == line_id and item.get("book_token") == book_token and item.get("tier") == tier:
                     existing_idx = idx
                     break
                     
             if verified:
-                payload = {
-                    "line_id": line_id,
-                    "filename": filename,
-                    "tier": tier,
-                    "character": target_line.get("character"),
-                    "text": target_line.get("text"),
-                    "dialogue": target_line.get("dialogue"),
-                    "narration_before": target_line.get("narration_before", ""),
-                    "narration_after": target_line.get("narration_after", ""),
-                    "emotion": target_line.get("emotion"),
-                    "attribution_method": target_line.get("attribution_method")
-                }
+                payload = _anonymized_line_payload(
+                    target_line,
+                    filename=filename,
+                    tier=tier,
+                    line_id=line_id,
+                )
                 if existing_idx >= 0:
                     feedback_data[existing_idx] = payload
                 else:
@@ -1969,9 +2115,15 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     feedback_data = []
                     
             # Check if this aspect verification already exists in feedback dataset
+            book_token = _feedback_book_token(filename, tier)
             existing_idx = -1
             for idx, item in enumerate(feedback_data):
-                if item.get("type") == "aspect_verification" and item.get("filename") == filename and item.get("tier") == tier and item.get("aspect") == aspect:
+                if (
+                    item.get("type") == "aspect_verification"
+                    and item.get("book_token") == book_token
+                    and item.get("tier") == tier
+                    and item.get("aspect") == aspect
+                ):
                     existing_idx = idx
                     break
                     
@@ -1979,14 +2131,15 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 # Capture structural parameters for training
                 aspect_details = {
                     "type": "aspect_verification",
-                    "filename": filename,
+                    "book_token": book_token,
                     "tier": tier,
                     "aspect": aspect,
                     "verified": True,
+                    "anonymized": True,
                     "metadata": {
                         "total_chapters": hierarchy_data["metadata"].get("total_chapters"),
                         "total_scenes": hierarchy_data["metadata"].get("total_scenes"),
-                        "global_characters": hierarchy_data["metadata"].get("global_characters")
+                        "global_character_count": len(hierarchy_data["metadata"].get("global_characters", []))
                     }
                 }
                 
@@ -1999,7 +2152,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                                 scenes_structure.append({
                                     "scene_id": scene.get("scene_id"),
                                     "scene_number": scene.get("scene_number"),
-                                    "first_line": scene.get("lines")[0].get("text") if scene.get("lines") else ""
+                                    "first_line_sha16": _feedback_hash(scene.get("lines")[0].get("text", "")) if scene.get("lines") else None,
+                                    "first_line_chars": len(scene.get("lines")[0].get("text", "")) if scene.get("lines") else 0,
                                 })
                     aspect_details["scenes_structure"] = scenes_structure
                 elif aspect == "chapter_splitting":
@@ -2013,7 +2167,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                             })
                     aspect_details["chapters_structure"] = chapters_structure
                 elif aspect == "character_classification":
-                    aspect_details["characters"] = hierarchy_data["metadata"].get("global_characters", [])
+                    aspect_details["character_count"] = len(hierarchy_data["metadata"].get("global_characters", []))
                     
                 if existing_idx >= 0:
                     feedback_data[existing_idx] = aspect_details
@@ -2089,9 +2243,14 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             
             # Keep non-line items or items from other books/tiers intact
             other_feedback_items = []
+            book_token = _feedback_book_token(filename, tier)
             for item in feedback_data:
-                # Keep if it is a different book or tier, or not a line feedback
-                if "line_id" not in item or item.get("filename") != filename or item.get("tier") != tier:
+                # Keep if it is a different book/tier token, or not a line feedback
+                if (
+                    "line_id" not in item
+                    or item.get("book_token") != book_token
+                    or item.get("tier") != tier
+                ):
                     other_feedback_items.append(item)
             
             # Scan current hierarchy for verified lines
@@ -2102,18 +2261,12 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         for line in scene.get("lines", []):
                             if line.get("verified"):
                                 line_id = line.get("line_id")
-                                payload = {
-                                    "line_id": line_id,
-                                    "filename": filename,
-                                    "tier": tier,
-                                    "character": line.get("character"),
-                                    "text": line.get("text"),
-                                    "dialogue": line.get("dialogue"),
-                                    "narration_before": line.get("narration_before", ""),
-                                    "narration_after": line.get("narration_after", ""),
-                                    "emotion": line.get("emotion"),
-                                    "attribution_method": line.get("attribution_method")
-                                }
+                                payload = _anonymized_line_payload(
+                                    line,
+                                    filename=filename,
+                                    tier=tier,
+                                    line_id=line_id,
+                                )
                                 new_feedback_lines.append(payload)
             
             final_feedback_data = other_feedback_items + new_feedback_lines

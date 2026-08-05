@@ -40,6 +40,14 @@ from src.upload_contract import (
 )
 
 try:
+    # NOTE: api_gateway.py appears unused/legacy (not imported or run by any
+    # other module in this codebase as of the marketplace decoupling work --
+    # gui_server.py and console_api.py use src/marketplace_client.py instead,
+    # talking to the now-standalone "Volcano Studios Voice Marketplace"
+    # product over HTTP). Left pointing at the old in-process
+    # voice_marketplace module rather than porting it to MarketplaceClient,
+    # since it isn't part of any live request path. Port or remove this file
+    # if it's ever wired back in.
     from src.voice_marketplace import VoiceMarketplace
 except Exception as exc:
     VoiceMarketplace = None

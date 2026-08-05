@@ -170,11 +170,38 @@ def _qc_clip(audio: np.ndarray, rate: int, noise_floor_db: Optional[float]) -> D
             "verdict": verdict, "problems": problems}
 
 
-def cmd_intake(name: str, input_dir: str) -> None:
+def _load_extra_transcripts(transcripts_path: Optional[str]) -> Dict[str, Tuple[str, str]]:
+    """Sidecar JSON mapping extra freeform clip ids (recorded beyond the
+    fixed 26-prompt script, e.g. additional read-aloud sessions) to their
+    transcript text -- how a dataset accumulates enough audio (30-60+ min)
+    for the fine-tuning tier, since the base script alone only yields ~15
+    minutes. Format: {"clip_id": "transcript text", ...} or
+    {"clip_id": {"emotion": "Neutral", "transcript": "..."}, ...}."""
+    if not transcripts_path:
+        return {}
+    if not os.path.exists(transcripts_path):
+        sys.exit(f"--transcripts file not found: {transcripts_path}")
+    with open(transcripts_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    extra = {}
+    for cid, val in raw.items():
+        if isinstance(val, str):
+            extra[cid] = ("Neutral", val)
+        else:
+            extra[cid] = (val.get("emotion", "Neutral"), val["transcript"])
+    return extra
+
+
+def cmd_intake(name: str, input_dir: str, transcripts_path: Optional[str] = None) -> None:
     d = _dataset_dir(name)
     if not os.path.isdir(d):
         sys.exit(f"Dataset '{name}' not initialized -- run init first.")
     prompts = {pid: (emo, text) for pid, emo, text in _prompts()}
+    extra_prompts = _load_extra_transcripts(transcripts_path)
+    collisions = set(prompts) & set(extra_prompts)
+    if collisions:
+        sys.exit(f"--transcripts ids collide with the fixed script's prompt ids: {sorted(collisions)}")
+    prompts.update(extra_prompts)
 
     noise_floor_db = None
     roomtone = os.path.join(input_dir, "roomtone.wav")
@@ -184,14 +211,25 @@ def cmd_intake(name: str, input_dir: str) -> None:
         noise_floor_db = 20 * np.log10(rms) if rms > 0 else None
         logger.info(f"Room tone noise floor: {noise_floor_db:.1f} dBFS" if noise_floor_db else "Room tone unreadable.")
 
-    report, copied = {}, 0
+    # Load any prior qc_report.json and merge into it rather than overwrite --
+    # intake is expected to be run multiple times against different input
+    # directories (the fixed script's session, then additional freeform
+    # sessions via --transcripts) so the corpus accumulates across calls.
+    qc_report_path = os.path.join(d, "qc_report.json")
+    report: Dict[str, Any] = {}
+    if os.path.exists(qc_report_path):
+        with open(qc_report_path, encoding="utf-8") as f:
+            report = json.load(f).get("clips", {})
+
+    copied = 0
     for fname in sorted(os.listdir(input_dir)):
         stem, ext = os.path.splitext(fname)
         if ext.lower() not in (".wav", ".flac", ".m4a", ".mp3") or stem == "roomtone":
             continue
         pid = stem if stem in prompts else None
         if pid is None:
-            logger.warning(f"'{fname}' doesn't match any prompt id -- skipped (name files A01.wav, B02.wav...).")
+            logger.warning(f"'{fname}' doesn't match any prompt id -- skipped (name files A01.wav, B02.wav, "
+                            f"or an id present in --transcripts).")
             continue
         audio, rate = _read_wav_mono(os.path.join(input_dir, fname))
         qc = _qc_clip(audio, rate, noise_floor_db)
@@ -202,11 +240,12 @@ def cmd_intake(name: str, input_dir: str) -> None:
             copied += 1
         logger.info(f"{pid}: {qc['verdict']}" + (f" -- {'; '.join(qc['problems'])}" if qc["problems"] else ""))
 
-    with open(os.path.join(d, "qc_report.json"), "w", encoding="utf-8") as f:
+    with open(qc_report_path, "w", encoding="utf-8") as f:
         json.dump({"noise_floor_dbfs": noise_floor_db, "clips": report, "intake_at": time.time()}, f, indent=2)
     missing = sorted(set(prompts) - set(report))
-    print(f"\nIntake: {copied} clip(s) accepted, {sum(1 for r in report.values() if r['verdict']=='REJECT')} rejected.")
-    print(f"QC report: {os.path.join(d, 'qc_report.json')}")
+    print(f"\nIntake: {copied} clip(s) accepted this run, {len(report)} total accepted+flagged "
+          f"({sum(1 for r in report.values() if r['verdict']=='REJECT')} rejected).")
+    print(f"QC report: {qc_report_path}")
     if missing:
         print(f"Still missing {len(missing)} prompt(s): {', '.join(missing[:12])}{'...' if len(missing) > 12 else ''}")
 
@@ -305,8 +344,8 @@ def cmd_onboard(name: str, seller: str, description: str, price: float, consent:
         record["signed_at"] = time.time()
         with open(consent_path, "w", encoding="utf-8") as f:
             json.dump(record, f, indent=2)
-    from src.voice_marketplace import VoiceMarketplace
-    mp = VoiceMarketplace()
+    from src.marketplace_client import MarketplaceClient
+    mp = MarketplaceClient()
     listing = mp.onboard_voice(
         seller_name=seller, voice_name=name, sample_wav_paths=[ref],
         description=description, price_usd=price, consent_confirmed=True)
@@ -315,20 +354,53 @@ def cmd_onboard(name: str, seller: str, description: str, price: float, consent:
     print(f"Dataset (fine-tune corpus grows here): {d}")
 
 
+def cmd_finetune(name: str, epochs: Optional[int], batch_size: Optional[int]) -> None:
+    from src.voice_finetune import DEFAULT_BATCH_SIZE, DEFAULT_EPOCHS, start_finetune_job
+    try:
+        status = start_finetune_job(
+            name, epochs=epochs or DEFAULT_EPOCHS, batch_size=batch_size or DEFAULT_BATCH_SIZE)
+    except ValueError as e:
+        sys.exit(str(e))
+    print(f"Fine-tune job started for '{name}': {json.dumps(status, indent=2, default=str)}")
+
+
+def cmd_finetune_status(name: str) -> None:
+    from src.voice_finetune import get_finetune_status
+    status = get_finetune_status(name)
+    print(json.dumps(status, indent=2, default=str))
+
+
+def cmd_cancel_finetune(name: str) -> None:
+    from src.voice_finetune import cancel_finetune_job
+    cancelled = cancel_finetune_job(name)
+    print(f"Cancelled." if cancelled else "No queued/running fine-tune job to cancel.")
+
+
 def main():
     p = argparse.ArgumentParser(description="Caldera Engine Voice Dataset Builder")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("init"); s.add_argument("--name", required=True); s.add_argument("--speaker", default="")
     s = sub.add_parser("intake"); s.add_argument("--name", required=True); s.add_argument("--input", required=True)
+    s.add_argument("--transcripts", default=None,
+                   help="Sidecar JSON of {clip_id: transcript} for extra freeform recordings "
+                        "beyond the fixed script -- how a corpus grows past ~15min toward the "
+                        "30-60min fine-tuning threshold across multiple intake sessions.")
     s = sub.add_parser("build"); s.add_argument("--name", required=True); s.add_argument("--denoise", action="store_true")
     s = sub.add_parser("onboard"); s.add_argument("--name", required=True); s.add_argument("--seller", required=True)
     s.add_argument("--description", required=True); s.add_argument("--price", type=float, default=0.0)
     s.add_argument("--consent", action="store_true")
+    s = sub.add_parser("finetune"); s.add_argument("--name", required=True)
+    s.add_argument("--epochs", type=int, default=None); s.add_argument("--batch-size", type=int, default=None)
+    s = sub.add_parser("finetune-status"); s.add_argument("--name", required=True)
+    s = sub.add_parser("cancel-finetune"); s.add_argument("--name", required=True)
     a = p.parse_args()
     if a.cmd == "init": cmd_init(a.name, a.speaker or a.name)
-    elif a.cmd == "intake": cmd_intake(a.name, a.input)
+    elif a.cmd == "intake": cmd_intake(a.name, a.input, a.transcripts)
     elif a.cmd == "build": cmd_build(a.name, a.denoise)
     elif a.cmd == "onboard": cmd_onboard(a.name, a.seller, a.description, a.price, a.consent)
+    elif a.cmd == "finetune": cmd_finetune(a.name, a.epochs, a.batch_size)
+    elif a.cmd == "finetune-status": cmd_finetune_status(a.name)
+    elif a.cmd == "cancel-finetune": cmd_cancel_finetune(a.name)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ marketplace consumes its output via `voice_marketplace.onboard_voice`.*
 |---|---|---|
 | **Zero-shot reference set** | 6–30 s of clean, expressive speech | Immediately — XTTS-v2 conditions on it directly; this is what the marketplace binds to characters today |
 | **Emotional reference bank** | 1–3 clips *per emotion* (5–15 s each) | Near-term — fills MemPalace's `emotional_references` table so "angry McGregor" conditions on *your* angry read instead of a pitch modifier |
-| **Fine-tuning corpus** | 30–60+ min, transcript-aligned | Premium tier — per-voice fine-tuning for maximum fidelity; the dataset built today is forward-compatible with it |
+| **Fine-tuning corpus** | 30–60+ min, transcript-aligned | Premium tier (implemented, §8) — real per-voice XTTS-v2 fine-tuning for maximum fidelity; grow past ~15 min via repeated `intake --transcripts` sessions |
 
 Design rule: **record once, serve all three.** The session script below produces a
 dataset that satisfies the zero-shot need on day one and accumulates toward the
@@ -108,3 +108,54 @@ to `voice_marketplace.onboard_voice` (which re-validates and assembles its own
 cloning reference), attaches the dataset path to the listing for future fine-tuning,
 and the voice becomes searchable/castable like any other. From there the normal flow
 applies: search → license → `cast_character` → MemPalace drawer → every synthesis.
+
+## 8. Fine-tuning tier (implemented)
+
+Once a dataset's accumulated, non-REJECT audio crosses a minimum duration
+(`CALDERA_FINETUNE_MIN_MINUTES`, default 30 minutes), a real per-speaker XTTS-v2
+GPT-decoder fine-tune can be triggered — a genuinely separate model checkpoint per
+voice, rather than the zero-shot conditioning every other tier uses.
+
+**Growing the corpus past ~15 minutes.** The fixed 26-prompt script alone only
+covers phonetic/emotional range, not duration. `voice_dataset.py intake` accepts a
+repeatable `--transcripts <sidecar.json>` argument mapping extra freeform clip ids
+to their transcript text (`{"EXT_001": "some line the actor read", ...}` or
+`{"EXT_001": {"emotion": "Joy", "transcript": "..."}}`); running `intake` multiple
+times (once per recording session) merges into the same `qc_report.json` instead of
+overwriting it, so a voice actor can do several additional read-aloud sessions
+(e.g. reading audiobook chapters aloud) to reach the 30-60+ minute threshold.
+
+**Triggering and monitoring a job:**
+```
+python -m src.voice_dataset finetune --name <dataset> [--epochs N] [--batch-size N]
+python -m src.voice_dataset finetune-status --name <dataset>
+python -m src.voice_dataset cancel-finetune --name <dataset>
+```
+`finetune` validates corpus readiness and launches `scripts/finetune_xtts_voice.py`
+as a **detached subprocess** (never in-process — this is a potentially multi-hour,
+GPU-heavy job); job state (`queued`/`running`/`ready`/`failed`) is persisted to
+`data/voice_datasets/<name>/finetune/status.json`, which self-heals to `failed` if
+the recorded process dies without ever writing a terminal state. See
+`src/voice_finetune.py` for the full lifecycle implementation.
+
+Once a job reaches `ready`, pin the resulting checkpoint to a character with
+`MemPalace.set_finetuned_checkpoint(character_name, checkpoint_dir)`;
+`voice_synthesizer.py`'s `synthesize_line` then loads that checkpoint (cached,
+LRU-bounded via `CALDERA_FINETUNE_MODEL_CACHE_SIZE`) instead of the shared
+zero-shot model for that character, falling back safely to zero-shot if the
+checkpoint is ever missing or fails to load.
+
+**Environment requirements.** Real training needs a CUDA-capable GPU and the
+`coqui-tts` training extras (`trainer`, `TTS.tts.layers.xtts.trainer.gpt_trainer`) —
+unavailable in most dev sandboxes. `scripts/finetune_xtts_voice.py` fails fast with a
+clear `status.json` error (not a silent hang or an opaque stack trace) when either is
+missing, so the gap is visible to whoever is polling `finetune-status`.
+
+**Scope decision (flagged, not the marketplace's concern).** Fine-tuned checkpoints
+are large (hundreds of MB), GPU-architecture-specific binary artifacts — not audio a
+buyer could preview — and are **not** pushed to the standalone Volcano Studios Voice
+Marketplace product. Fine-tuning is Firespeaker-local production infrastructure: a
+studio that already owns/licensed enough of a voice's audio can build a fine-tuned
+model for its own local synthesis pipeline. Selling "fine-tuned tier access" as a
+product would need a different concept entirely (e.g. hosted rendering credits, not
+a checkpoint transfer) and is out of scope here.

@@ -599,7 +599,7 @@ Return JSON: {{"headings": [{{"heading_line": "..."}}]}}
             continue
         chapters.append({
             "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-            "title": needle[:80],
+            "title": _normalize_chapter_title(needle[:80]),
             "text_block": block,
         })
     return chapters if len(chapters) >= 2 else None
@@ -1003,6 +1003,102 @@ def clean_front_matter(text: str) -> str:
     scrubber = ClutterScrubber()
     return scrubber.remove_front_matter(text)
 
+
+_CHAPTER_WORD_NUMBERS = {
+    "ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
+    "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
+}
+
+
+def _roman_to_int(value: str) -> int:
+    roman_values = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+    total, prev = 0, 0
+    for ch in reversed(value):
+        v = roman_values.get(ch, 0)
+        total = total - v if v < prev else total + v
+        prev = max(prev, v)
+    return total
+
+
+def _chapter_heading_components(title: str) -> Tuple[Optional[int], str]:
+    match = re.match(
+        r'^\s*(?:CHAPTER|CHAPITRE)\s+([IVXLCDM]+|[0-9]+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)\b(.*)$',
+        title or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None, ""
+    number_raw = match.group(1).strip().upper()
+    suffix = (match.group(2) or "").strip(" .:-\t")
+    if number_raw.isdigit():
+        number = int(number_raw)
+    elif number_raw in _CHAPTER_WORD_NUMBERS:
+        number = _CHAPTER_WORD_NUMBERS[number_raw]
+    else:
+        number = _roman_to_int(number_raw)
+    return number, suffix.strip()
+
+
+def _normalize_chapter_title(title: str) -> str:
+    number, suffix = _chapter_heading_components(title)
+    if number is not None:
+        return f"Chapter {number}: {suffix}" if suffix else f"Chapter {number}"
+
+    bare_roman = re.match(r'^\s*([IVXLCDM]+)(?:--|\s*[-.]\s*)(.+?)\s*$', title or "", re.IGNORECASE)
+    if bare_roman:
+        number = _roman_to_int(bare_roman.group(1).upper())
+        suffix = bare_roman.group(2).strip(" .:-\t")
+        return f"Chapter {number}: {suffix}" if suffix else f"Chapter {number}"
+
+    return (title or "").strip()
+
+
+def _looks_intro_like(value: str) -> bool:
+    return bool(re.search(r'\b(introduction|intro|prologue|preface|foreword)\b', value or "", re.IGNORECASE))
+
+
+def _normalized_similarity(a: str, b: str) -> float:
+    norm_a = re.sub(r"\s+", " ", (a or "").strip().lower())
+    norm_b = re.sub(r"\s+", " ", (b or "").strip().lower())
+    if not norm_a or not norm_b:
+        return 0.0
+    if norm_a in norm_b or norm_b in norm_a:
+        return min(len(norm_a), len(norm_b)) / max(len(norm_a), len(norm_b))
+    a_words = set(norm_a.split())
+    b_words = set(norm_b.split())
+    if not a_words or not b_words:
+        return 0.0
+    return len(a_words & b_words) / len(a_words | b_words)
+
+
+def _resolve_chapter_heading_conflicts(chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if len(chapters) < 2:
+        return chapters
+
+    resolved: List[Dict[str, Any]] = [dict(chapters[0])]
+    for chapter in chapters[1:]:
+        current = dict(chapter)
+        prev = resolved[-1]
+        prev_num, prev_suffix = _chapter_heading_components(prev.get("title", ""))
+        curr_num, _ = _chapter_heading_components(current.get("title", ""))
+
+        if prev_num is not None and curr_num is not None and prev_num == curr_num:
+            prev_text = prev.get("text_block", "")
+            curr_text = current.get("text_block", "")
+            similar = _normalized_similarity(prev_text[:3000], curr_text[:3000]) >= 0.92
+            if similar:
+                if len(curr_text) > len(prev_text):
+                    prev["text_block"] = curr_text
+                continue
+
+            prev_intro_signal = _looks_intro_like(prev_suffix) or _looks_intro_like(prev_text[:250])
+            if prev_intro_signal and prev_suffix:
+                prev["title"] = prev_suffix.title()
+
+        resolved.append(current)
+
+    return resolved
+
 def identify_parts(raw_text: str) -> List[Dict[str, Any]]:
     """
     Loop 1: Part Identification (Macro-Router)
@@ -1100,12 +1196,12 @@ def identify_chapters(part_text: str, part_id: str) -> List[Dict[str, Any]]:
                 if block:
                     chapters.append({
                         "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-                        "title": f"Section {numeral}",
+                        "title": f"Section {_roman_to_int(numeral)}",
                         "text_block": block,
                     })
             if len(chapters) >= 3:
                 logger.info(f"Bare-roman section sequence detected: {len(chapters)} chapters.")
-                return chapters
+                return _resolve_chapter_heading_conflicts(chapters)
 
         # Gate 2 Fallback
         return [{
@@ -1132,13 +1228,165 @@ def identify_chapters(part_text: str, part_id: str) -> List[Dict[str, Any]]:
             continue
         chapters.append({
             "chapter_id": f"{part_id}_c{len(chapters) + 1}",
-            "title": heading,
+            "title": _normalize_chapter_title(heading),
             "text_block": text_chunk
         })
         
-    return chapters
+    return _resolve_chapter_heading_conflicts(chapters)
 
-def identify_scenes(chapter_text: str, chapter_id: str, max_chars: int = 15000, is_single_chapter_book: bool = False) -> List[Dict[str, Any]]:
+
+# ─── Scene Boundary Intelligence v2 ──────────────────────────────────────────
+# Detector metadata
+_SCENE_DETECTOR_VERSION = "scene_v2"
+
+# Signal weights (must sum to 1.0)
+_SIGNAL_WEIGHTS: Dict[str, float] = {
+    "lexical_time":     0.40,
+    "lexical_location": 0.35,
+    "speaker_shift":    0.15,
+    "stat_density":     0.10,
+}
+
+# Score >= this → auto-split; score in [_REVIEW_THRESHOLD, _SPLIT_THRESHOLD) → flagged
+_SPLIT_THRESHOLD  = 0.30
+_REVIEW_THRESHOLD = 0.18
+
+# Compiled patterns used by the v2 scorer
+_TIME_PATTERN = re.compile(
+    r'^(?:later\b|meanwhile\b|afterward(?:s)?\b|eventually\b|'
+    r'the\s+next\s+(?:morning|day|evening|night|week|year)\b|'
+    r'the\s+following\s+(?:morning|day|night|week)\b|'
+    r'that\s+(?:evening|night|morning|afternoon)\b|'
+    r'(?:hours|days|weeks|months|years)\s+later\b|'
+    r'some\s+time\s+(?:later|afterwards)\b|'
+    r'when\s+(?:he|she|they|we)\s+(?:awoke|returned|arrived|came|entered)\b|'
+    r'by\s+(?:morning|evening|nightfall|dawn|dusk|sunrise|sunset)\b|'
+    r'at\s+(?:dawn|dusk|sunrise|sunset|last|noon)\b|'
+    r'(?:one|the\s+next|next)\s+(?:morning|evening|day|night)\b|'
+    r'presently\b|by\s+and\s+by\b|soon\s+after(?:ward)?\b|'
+    r'that\s+same\s+(?:morning|evening|night|day)\b)',
+    re.IGNORECASE,
+)
+
+_LOCATION_PATTERN = re.compile(
+    r'^(?:across\s+(?:the|town|the\s+street|the\s+hall|the\s+room|the\s+road)\b|'
+    r'back\s+(?:at|in)\s+the\b|'
+    r'meanwhile[,\s]+(?:at|in|back)\b|'
+    r'elsewhere\b|'
+    r'(?:upstairs|downstairs|outside|inside|overhead)\b|'
+    r'on\s+the\s+other\s+(?:side|end)\b|'
+    r'through\s+the\s+(?:door|gate|window|arch)\b|'
+    r'in\s+the\s+(?:next|other|far|back)\b|'
+    r'far\s+(?:away|off|below|above)\b|'
+    r'(?:above|below|beyond)\s+(?:the|them|him|her)\b|'
+    r'at\s+the\s+(?:other|far)\s+end\b)',
+    re.IGNORECASE,
+)
+
+
+def _v2_lexical_time_score(para: str) -> float:
+    """1.0 if paragraph starts with a temporal transition phrase, else 0.0."""
+    clean = re.sub(r"^['\"`\(\[\s*#\-]+", "", para).strip()
+    return 1.0 if _TIME_PATTERN.match(clean) else 0.0
+
+
+def _v2_lexical_location_score(para: str) -> float:
+    """1.0 if paragraph starts with a spatial transition phrase, else 0.0."""
+    clean = re.sub(r"^['\"`\(\[\s*#\-]+", "", para).strip()
+    return 1.0 if _LOCATION_PATTERN.match(clean) else 0.0
+
+
+def _v2_quote_density(text: str) -> float:
+    """Normalised dialogue density (0.0–1.0)."""
+    if not text:
+        return 0.0
+    count = text.count('"') + text.count('\u201c') + text.count('\u201d')
+    return min(1.0, count / max(1, len(text)) * 25)
+
+
+def _v2_cap_tokens(text: str) -> set:
+    """Capitalised multi-char tokens that look like proper nouns."""
+    return {
+        w.strip("\"'\u201c\u201d.,;:!?()[]")
+        for w in text.split()
+        if len(w) > 2 and w[0].isupper() and not w.isupper()
+    }
+
+
+def _v2_speaker_shift_score(prev: str, nxt: str) -> float:
+    """Proxy for speaker/POV change: dialogue ratio + entity set shift."""
+    prev_qd = _v2_quote_density(prev)
+    nxt_qd  = _v2_quote_density(nxt)
+    ratio_delta = abs(prev_qd - nxt_qd)
+
+    prev_caps = _v2_cap_tokens(prev)
+    nxt_caps  = _v2_cap_tokens(nxt)
+    union = prev_caps | nxt_caps
+    cap_shift = (
+        len(prev_caps.symmetric_difference(nxt_caps)) / len(union)
+        if union else 0.0
+    )
+    return min(1.0, ratio_delta * 0.55 + cap_shift * 0.45)
+
+
+def _v2_stat_density_shift(prev: str, nxt: str) -> float:
+    """Word-count and sentence-length change as a normalised shift score."""
+    def _avg_sentence_len(t: str) -> float:
+        sentences = re.split(r"[.!?]+", t)
+        lens = [len(s.split()) for s in sentences if s.strip()]
+        return sum(lens) / len(lens) if lens else 0.0
+
+    prev_wc = len(prev.split())
+    nxt_wc  = len(nxt.split())
+    avg_wc  = (prev_wc + nxt_wc) / 2 or 1
+    wc_delta = min(1.0, abs(prev_wc - nxt_wc) / avg_wc)
+
+    prev_sl = _avg_sentence_len(prev)
+    nxt_sl  = _avg_sentence_len(nxt)
+    avg_sl  = (prev_sl + nxt_sl) / 2 or 1
+    sl_delta = min(1.0, abs(prev_sl - nxt_sl) / avg_sl)
+
+    return min(1.0, wc_delta * 0.5 + sl_delta * 0.5)
+
+
+def _v2_score_boundary(prev_para: str, next_para: str) -> Dict[str, Any]:
+    """
+    Compute multi-signal boundary score between two adjacent paragraphs.
+
+    Returns a dict with keys: score, signals, reasons, confidence_band.
+    """
+    signals: Dict[str, float] = {
+        "lexical_time":     _v2_lexical_time_score(next_para),
+        "lexical_location": _v2_lexical_location_score(next_para),
+        "speaker_shift":    _v2_speaker_shift_score(prev_para, next_para),
+        "stat_density":     _v2_stat_density_shift(prev_para, next_para),
+    }
+    score = sum(_SIGNAL_WEIGHTS[k] * v for k, v in signals.items())
+
+    reasons: List[str] = []
+    if signals["lexical_time"]     >= 0.6:
+        reasons.append("time_jump")
+    if signals["lexical_location"] >= 0.6:
+        reasons.append("location_shift")
+    if signals["speaker_shift"]    >= 0.55:
+        reasons.append("speaker_shift")
+    if signals["stat_density"]     >= 0.65:
+        reasons.append("density_shift")
+
+    if score >= _SPLIT_THRESHOLD:
+        band = "high"
+    elif score >= _REVIEW_THRESHOLD:
+        band = "medium"
+    else:
+        band = "low"
+
+    return {
+        "score":           round(score, 4),
+        "signals":         {k: round(v, 4) for k, v in signals.items()},
+        "reasons":         reasons,
+        "confidence_band": band,
+    }
+def identify_scenes(chapter_text: str, chapter_id: str, max_chars: int = 15000, is_single_chapter_book: bool = False, _boundary_sink: List = None) -> List[Dict[str, Any]]:
     """
     Loop 3: Scene Identification (Micro-Router / Density Heuristic)
     Looks for explicit breaks and pre-annotated scene markers.
@@ -1159,16 +1407,22 @@ def identify_scenes(chapter_text: str, chapter_id: str, max_chars: int = 15000, 
                 for i in range(0, len(paragraphs), chunk_size):
                     chunk = paragraphs[i:i + chunk_size]
                     scenes.append({
-                        "scene_id": f"{chapter_id}_s{scene_counter}",
-                        "text_block": "\n\n".join(chunk),
-                        "boundary_source": "marker_then_size_chunk"
+                        "scene_id":        f"{chapter_id}_s{scene_counter}",
+                        "text_block":      "\n\n".join(chunk),
+                        "boundary_source": "marker_then_size_chunk",
+                        "confidence":      0.95,
+                        "reasons":         ["explicit_separator"],
+                        "detector_version": _SCENE_DETECTOR_VERSION,
                     })
                     scene_counter += 1
             else:
                 scenes.append({
-                    "scene_id": f"{chapter_id}_s{scene_counter}",
-                    "text_block": block,
-                    "boundary_source": "explicit_marker"
+                    "scene_id":        f"{chapter_id}_s{scene_counter}",
+                    "text_block":      block,
+                    "boundary_source": "explicit_marker",
+                    "confidence":      1.0,
+                    "reasons":         ["explicit_separator"],
+                    "detector_version": _SCENE_DETECTOR_VERSION,
                 })
                 scene_counter += 1
         return scenes
@@ -1182,57 +1436,90 @@ def identify_scenes(chapter_text: str, chapter_id: str, max_chars: int = 15000, 
         return [{
             "scene_id": f"{chapter_id}_s1",
             "text_block": chapter_text.strip(),
-            "boundary_source": "whole_chapter"
+            "boundary_source":"whole_chapter",
+            "confidence": 0.95,
+            "reasons": ["single_scene_chapter"],
+            "detector_version": _SCENE_DETECTOR_VERSION,
         }]
         
     if len(paragraphs) <= 15:
         return [{
             "scene_id": f"{chapter_id}_s1",
             "text_block": chapter_text.strip(),
-            "boundary_source": "whole_chapter"
+            "boundary_source":"whole_chapter",
+            "confidence": 0.95,
+            "reasons": ["single_scene_chapter"],
+            "detector_version": _SCENE_DETECTOR_VERSION,
         }]
         
-    logger.info(f"Analyzing narrative transitions in {len(paragraphs)} paragraphs...")
-    
-    # Heuristic transition word detector: GENERIC temporal/spatial phrases only.
-    # (Book-specific phrases -- Peter Rabbit lines like "flopsy, mopsy" -- were
-    # removed 2026-07-04: they were overfitting to one gold file and made the
-    # measured "scene accuracy" on that book meaningless. Semantic scene
-    # segmentation is the Director's Scene Segmenter gate's job, not regex's.)
-    transition_pattern = re.compile(
-        r'^(?:later|meanwhile|suddenly|the\s+next\s+(?:morning|day|evening)|that\s+(?:evening|night|morning)|one\s+(?:morning|evening|day|night)|during\s+the\s+(?:evening|night)|when\s+(?:he|she|they)\s+(?:awoke|returned)|hours\s+later|some\s+time\s+(?:later|afterwards))',
-        re.IGNORECASE
-    )
+    logger.info(f"[Scene v2] Scoring {len(paragraphs)} paragraphs for boundaries in {chapter_id}...")
+
     scenes = []
     current_chunk = []
+    boundary_candidates = []
     scene_counter = 1
+    para_offset = 0
 
-    for p in paragraphs:
-        is_transition = False
-        p_clean = re.sub(r"^['\"`\(\s]+", "", p).strip().lower()
-        if transition_pattern.match(p_clean):
-            is_transition = True
+    for p_idx, p in enumerate(paragraphs):
+        if current_chunk:
+            bev = _v2_score_boundary(current_chunk[-1], p)
+            boundary_candidates.append({
+                "after_paragraph_index": para_offset - 1,
+                "score":           bev["score"],
+                "signals":         bev["signals"],
+                "reasons":         bev["reasons"],
+                "confidence_band": bev["confidence_band"],
+            })
+            should_split = (
+                bev["score"] >= _SPLIT_THRESHOLD and len(current_chunk) >= 2
+            ) or len(current_chunk) >= 15
+        else:
+            bev = None
+            should_split = False
 
-        # Trigger break if a strong transition keyword matched, or if the chunk has
-        # grown beyond a comfortable paragraph count for single-chapter books.
-        if (is_transition and len(current_chunk) >= 2) or len(current_chunk) >= 15:
+        if should_split and bev is not None:
+            confidence = round(min(1.0, bev["score"] / _SPLIT_THRESHOLD * 0.95), 4) if bev["score"] < 1.0 else 0.95
             scenes.append({
-                "scene_id": f"{chapter_id}_s{scene_counter}",
-                "text_block": "\n\n".join(current_chunk),
-                "boundary_source": "transition_heuristic"
+                "scene_id":        f"{chapter_id}_s{scene_counter}",
+                "text_block":      "\n\n".join(current_chunk),
+                "boundary_source": "v2_heuristic",
+                "confidence":      confidence,
+                "reasons":         bev["reasons"] or ["heuristic_split"],
+                "detector_version": _SCENE_DETECTOR_VERSION,
+                "_boundary_evidence": {
+                    "after_paragraph_index": para_offset - 1,
+                    "score":   bev["score"],
+                    "signals": bev["signals"],
+                },
             })
             scene_counter += 1
             current_chunk = [p]
         else:
             current_chunk.append(p)
-            
+        para_offset += 1
+
     if current_chunk:
         scenes.append({
-            "scene_id": f"{chapter_id}_s{scene_counter}",
-            "text_block": "\n\n".join(current_chunk),
-            "boundary_source": "transition_heuristic"
+            "scene_id":        f"{chapter_id}_s{scene_counter}",
+            "text_block":      "\n\n".join(current_chunk),
+            "boundary_source": "v2_heuristic",
+            "confidence":      0.70,
+            "reasons":         ["chapter_end"],
+            "detector_version": _SCENE_DETECTOR_VERSION,
         })
-        
+
+    # Deliver boundary candidates to caller via the sink (if provided)
+    # and strip internal evidence keys from the public scene contract.
+    if _boundary_sink is not None:
+        _boundary_sink.extend(boundary_candidates)
+        for sc in scenes:
+            bev = sc.get("_boundary_evidence")
+            if bev is not None:
+                _boundary_sink.append({**bev, "decision": "split"})
+
+    for sc in scenes:
+        sc.pop("_boundary_evidence", None)
+
     return scenes
 
 def extract_quotes_safely(paragraph: str) -> List[Dict[str, Any]]:
@@ -1315,8 +1602,19 @@ def extract_quotes_safely(paragraph: str) -> List[Dict[str, Any]]:
             
     return cleaned_segments
 
-def parse_tier_1_lines(scene_text: str, part_num: int, chapter_num: int, scene_num: int) -> List[ScriptLine]:
-    """Loop 4: Line Parsing & Narrator Attribution (The Handoff)"""
+def parse_tier_1_lines(
+    scene_text: str,
+    part_num: int,
+    chapter_num: int,
+    scene_num: int,
+    *,
+    narrator_only: bool = True,
+) -> List[ScriptLine]:
+    """Loop 4: Line Parsing & Narrator Attribution (The Handoff).
+
+    narrator_only keeps Tier 1 paragraph flow intact so quoted words remain part
+    of narrator delivery. When False, quote boundaries are split for attribution.
+    """
     # Split paragraphs by double newlines to preserve paragraph integrity, then strip
     paragraphs = [p.strip() for p in re.split(r'\n\n+', scene_text) if p.strip()]
     script_lines = []
@@ -1346,7 +1644,11 @@ def parse_tier_1_lines(scene_text: str, part_num: int, chapter_num: int, scene_n
     for p in paragraphs:
         # Normalize internal single newlines inside paragraph to space to avoid mid-sentence line wrap splits
         p_normalized = re.sub(r'\s*\n\s*', ' ', p)
-        segments = extract_quotes_safely(p_normalized)
+        if narrator_only:
+            cleaned = p_normalized.strip()
+            segments = [{"type": "narrative", "text": cleaned}] if cleaned else []
+        else:
+            segments = extract_quotes_safely(p_normalized)
         for seg_idx, segment in enumerate(segments):
             # Deterministic line_id based on text content
             raw_id = f"p{part_num}_c{chapter_num}_s{scene_num}_l{line_counter}_{segment['text']}"
@@ -1549,6 +1851,7 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
     
     all_loop2_chapters = []
     all_loop3_scenes = []
+    all_loop3_boundaries: List[Dict[str, Any]] = []
     all_loop4_lines = []
     all_loop4_lines_enriched = []
     all_llm_cleancheck_issues = []
@@ -1635,7 +1938,12 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
             
             print(f"  -> Chapter {total_chapters}/{total_chapters_detected}: '{chap_title}'")
             _progress.report(_book, "tier1_structure", total_chapters, total_chapters_detected, chap_title[:40])
-            scenes = identify_scenes(chap_block, chap_id, is_single_chapter_book=is_single_chapter_book)
+            chap_candidates: List[Dict[str, Any]] = []
+            scenes = identify_scenes(
+                chap_block, chap_id,
+                is_single_chapter_book=is_single_chapter_book,
+                _boundary_sink=chap_candidates,
+            )
             print(f"     [Loop 3] Found {len(scenes)} scenes.")
 
             # G4 gate: when no explicit typographic markers produced these scene
@@ -1667,6 +1975,21 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
                     except Exception as e:
                         logger.warning(f"G4 gate failed for {chap_id}, keeping deterministic scenes: {e}")
             all_loop3_scenes.extend(scenes)
+
+            # Pop split-point evidence from individual scenes and merge with chap_candidates
+            for sc in scenes:
+                bev = sc.pop("_boundary_evidence", None)
+                if bev is not None:
+                    chap_candidates.append({**bev, "decision": "split"})
+            if chap_candidates:
+                all_loop3_boundaries.append({
+                    "chapter_id":       chap_id,
+                    "detector_version": _SCENE_DETECTOR_VERSION,
+                    "paragraph_count":  len([p for p in re.split(r"\r?\n\s*\r?\n", chap_block) if p.strip()]),
+                    "scene_count":      len(scenes),
+                    "candidates":       chap_candidates,
+                })
+
             scene_payloads = []
             
             for s_idx, scene in enumerate(scenes):
@@ -1678,7 +2001,8 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
                     scene_text=scene_block,
                     part_num=p_idx + 1,
                     chapter_num=total_chapters,
-                    scene_num=total_scenes
+                    scene_num=total_scenes,
+                    narrator_only=not enable_llm_enrichment,
                 )
                 print(f"     [Loop 4] Scene {total_scenes} -> Extracted {len(lines)} speech/narrative lines.")
 
@@ -1816,7 +2140,11 @@ def ingest_manuscript_tier_1(file_path: str, chapters: str = None, enable_llm_en
         
     with open(os.path.join(pipeline_dir, "loop3_scenes.json"), "w", encoding="utf-8") as f:
         json.dump(all_loop3_scenes, f, indent=4)
-        
+
+    if all_loop3_boundaries:
+        with open(os.path.join(pipeline_dir, "loop3_boundaries.json"), "w", encoding="utf-8") as f:
+            json.dump(all_loop3_boundaries, f, indent=4)
+
     with open(os.path.join(pipeline_dir, "loop4_lines.json"), "w", encoding="utf-8") as f:
         json.dump(all_loop4_lines, f, indent=4)
 
@@ -1990,3 +2318,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+

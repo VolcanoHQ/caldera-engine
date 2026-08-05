@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.models import ManuscriptManifest
+from src.attribution_reduction import load_performance_scene_lines
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("ProductionMixer")
@@ -701,7 +702,9 @@ def mix_production(manifest_path: str, output_path: str) -> Dict[str, Any]:
     for part in manifest.parts:
         for chapter in part.chapters:
             for scene in chapter.scenes:
-                lines = [l.model_dump() for l in scene.lines]
+                lines = load_performance_scene_lines(book_stem, scene.scene_id)
+                if not lines:
+                    lines = [l.model_dump() for l in scene.lines]
 
                 # Splice dramatized inserts (additive, flagged) after their anchors.
                 # Foley-only "vocals" (Thud, Creak) are rerouted to generated SFX

@@ -12,6 +12,7 @@ import os
 import sys
 import logging
 import gc
+from collections import OrderedDict
 from typing import Dict, Any, Optional
 
 # Ensure the root project directory is in the sys.path for absolute modular imports
@@ -242,6 +243,13 @@ class VoiceSynthesizer:
         self.bark_model = None
         self.bark_processor = None
 
+        # Fine-tuned per-character checkpoints (src/voice_finetune.py's premium
+        # tier), loaded on demand and cached since each one is a full XTTS model
+        # instance holding real GPU/CPU memory -- keyed by checkpoint_dir,
+        # bounded LRU so casting many fine-tuned characters can't leak memory.
+        self._finetuned_model_cache: "OrderedDict[str, Any]" = OrderedDict()
+        self._finetuned_model_cache_size = max(1, int(os.getenv("CALDERA_FINETUNE_MODEL_CACHE_SIZE", "2")))
+
     # ----------------------------------------------------
     # Pre-flight Resource Checker & VRAM Validation
     # ----------------------------------------------------
@@ -261,6 +269,49 @@ class VoiceSynthesizer:
         except Exception as e:
             logger.error(f"CPU demotion failed: {e}")
             return False
+
+    def _get_synthesis_model(self, char_drawer: Dict[str, Any]) -> Any:
+        """Selects which XTTS model instance renders this character's line:
+        a real fine-tuned per-speaker checkpoint (src/voice_finetune.py's
+        premium tier) if the character's drawer has one pinned and it loads
+        successfully, otherwise the shared zero-shot self.xtts_model.
+        Never raises -- any load failure logs and falls back so a bad/missing
+        checkpoint never breaks synthesis outright."""
+        checkpoint_dir = (char_drawer or {}).get("finetuned_checkpoint_dir")
+        if not checkpoint_dir:
+            return self.xtts_model
+        if not (HAS_TORCH and os.path.isdir(checkpoint_dir)):
+            if checkpoint_dir:
+                logger.warning(
+                    f"Fine-tuned checkpoint '{checkpoint_dir}' unusable (torch missing or path gone); "
+                    f"falling back to zero-shot cloning."
+                )
+            return self.xtts_model
+
+        cached = self._finetuned_model_cache.get(checkpoint_dir)
+        if cached is not None:
+            self._finetuned_model_cache.move_to_end(checkpoint_dir)  # mark most-recently-used
+            return cached
+
+        try:
+            from TTS.api import TTS
+            config_path = os.path.join(checkpoint_dir, "config.json")
+            device = "cpu" if self.force_cpu else "cuda"
+            model = TTS(model_path=checkpoint_dir, config_path=config_path).to(device)
+        except Exception as e:
+            logger.warning(
+                f"Failed to load fine-tuned checkpoint '{checkpoint_dir}': {e}. "
+                f"Falling back to zero-shot cloning for this line."
+            )
+            return self.xtts_model
+
+        self._finetuned_model_cache[checkpoint_dir] = model
+        while len(self._finetuned_model_cache) > self._finetuned_model_cache_size:
+            evicted_dir, evicted_model = self._finetuned_model_cache.popitem(last=False)
+            logger.info(f"Evicting cached fine-tuned model for '{evicted_dir}' (cache size limit reached).")
+            del evicted_model
+        logger.info(f"Loaded fine-tuned checkpoint '{checkpoint_dir}' on {device}.")
+        return model
 
     def check_preflight_resources(self, target_model: str) -> Dict[str, Any]:
         """
@@ -457,7 +508,8 @@ class VoiceSynthesizer:
             "character": character_name,
             "output_path": output_wav_path,
             "reference_used": "commercial_api_elevenlabs",
-            "modulation_applied": {"speed": 1.0, "pitch": 0.0}
+            "modulation_applied": {"speed": 1.0, "pitch": 0.0},
+            "engine": "commercial_sim_tone",
         }
 
     def synthesize_line(
@@ -508,6 +560,8 @@ class VoiceSynthesizer:
         
         # 2. Dynamic reference fetching (emotional query similarity check)
         optimal_ref_path, _ = self.palace.query_optimal_voice(character_name, target_emotion)
+        xtts_error: Optional[str] = None
+        edge_tts_error: Optional[str] = None
         
         # 3. Model execution
         model_type = "bark" if use_bark else "xtts"
@@ -524,7 +578,9 @@ class VoiceSynthesizer:
 
         # Primary path: local open-source XTTS-v2 (real neural synthesis, CPU or GPU).
         # Falls through to edge-tts (online) and finally the mock tone on any failure.
-        if self.xtts_model is not None:
+        active_model = self._get_synthesis_model(char_drawer)
+        using_finetuned = active_model is not None and active_model is not self.xtts_model
+        if active_model is not None:
             try:
                 import hashlib
                 import subprocess
@@ -543,7 +599,14 @@ class VoiceSynthesizer:
                 ref_is_custom = ref_is_real_file and "narrator_mono" not in os.path.basename(optimal_ref_path)
 
                 pinned_speaker = (modulation_config or {}).get("xtts_speaker")
-                if pinned_speaker:
+                if using_finetuned and ref_is_real_file:
+                    # A fine-tuned checkpoint IS this character's voice -- the
+                    # builtin-speaker/pinned-speaker rules below exist only to pick
+                    # a *stand-in* for zero-shot cloning and don't apply here. Still
+                    # pass the reference wav (XTTS's inference API expects one for
+                    # conditioning latents even with a fine-tuned GPT decoder).
+                    synth_kwargs["speaker_wav"] = optimal_ref_path
+                elif pinned_speaker:
                     # Deliberate casting: a builtin speaker pinned in the character's
                     # MemPalace drawer beats every automatic selection rule.
                     synth_kwargs["speaker"] = pinned_speaker
@@ -579,11 +642,11 @@ class VoiceSynthesizer:
                             continue
                         seg = raw_path + f".seg{pi}.wav"
                         try:
-                            self.xtts_model.tts_to_file(text=part.strip(), language="en", file_path=seg, **synth_kwargs)
+                            active_model.tts_to_file(text=part.strip(), language="en", file_path=seg, **synth_kwargs)
                         except RuntimeError as oom:
-                            if "out of memory" not in str(oom).lower() or not self._demote_xtts_to_cpu():
+                            if using_finetuned or "out of memory" not in str(oom).lower() or not self._demote_xtts_to_cpu():
                                 raise
-                            self.xtts_model.tts_to_file(text=part.strip(), language="en", file_path=seg, **synth_kwargs)
+                            active_model.tts_to_file(text=part.strip(), language="en", file_path=seg, **synth_kwargs)
                         seg_files.append(seg)
                         concat_items.append(seg)
                     concat_txt = raw_path + ".concat.txt"
@@ -598,16 +661,16 @@ class VoiceSynthesizer:
                             pass
                 else:
                     try:
-                        self.xtts_model.tts_to_file(
+                        active_model.tts_to_file(
                             text=dialogue_text,
                             language="en",
                             file_path=raw_path,
                             **synth_kwargs,
                         )
                     except RuntimeError as oom:
-                        if "out of memory" not in str(oom).lower() or not self._demote_xtts_to_cpu():
+                        if using_finetuned or "out of memory" not in str(oom).lower() or not self._demote_xtts_to_cpu():
                             raise
-                        self.xtts_model.tts_to_file(
+                        active_model.tts_to_file(
                             text=dialogue_text,
                             language="en",
                             file_path=raw_path,
@@ -626,7 +689,11 @@ class VoiceSynthesizer:
                 except OSError:
                     pass
 
-                logger.info(f"XTTS-v2 synthesis complete for '{character_name}' ({synth_kwargs.get('speaker') or 'cloned ref'}) at {output_wav_path}")
+                logger.info(
+                    f"XTTS-v2 synthesis complete for '{character_name}' "
+                    f"({'fine-tuned checkpoint' if using_finetuned else (synth_kwargs.get('speaker') or 'cloned ref')}) "
+                    f"at {output_wav_path}"
+                )
                 self.palace.log_room(
                     room_id=f"sim_{abs(hash(dialogue_text)) % 100000}",
                     wing_id="wing_c1",
@@ -643,9 +710,10 @@ class VoiceSynthesizer:
                     "output_path": output_wav_path,
                     "reference_used": synth_kwargs.get("speaker_wav") or synth_kwargs.get("speaker"),
                     "modulation_applied": modulation_config,
-                    "engine": "xtts_v2_local"
+                    "engine": "xtts_v2_finetuned" if using_finetuned else "xtts_v2_local"
                 }
             except Exception as e:
+                xtts_error = str(e)
                 logger.warning(f"XTTS-v2 synthesis failed for '{character_name}': {e}. Falling back to Edge TTS.")
 
         edge_tts_success = False
@@ -775,6 +843,7 @@ class VoiceSynthesizer:
             edge_tts_success = True
             logger.info(f"Successfully generated Edge TTS voice for '{character_name}' at {output_wav_path}")
         except Exception as e:
+            edge_tts_error = str(e)
             logger.warning(f"Edge TTS synthesis failed: {e}. Falling back to modulated math tone.")
         finally:
             if 'mp3_path' in locals() and os.path.exists(mp3_path):
@@ -853,7 +922,10 @@ class VoiceSynthesizer:
             "character": character_name,
             "output_path": output_wav_path,
             "reference_used": optimal_ref_path,
-            "modulation_applied": modulation_config
+            "modulation_applied": modulation_config,
+            "engine": "edge_tts" if edge_tts_success else "mock_tone",
+            "xtts_error": xtts_error,
+            "edge_tts_error": edge_tts_error,
         }
 
 

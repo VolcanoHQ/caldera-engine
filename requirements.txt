@@ -19,6 +19,8 @@ spacy>=3.8.4                      # Deterministic syntactic parsing & rule-based
 xcore-coref>=0.1.0                # Cross-Context Coreference Resolution (xCoRe) neural engine
 nltk>=3.8.1                       # Sentiment intensity heuristics (VADER Lexicon)
 chromadb>=0.4.0                   # Centralized Vector similarity database for Spatial Memory Palace
+qdrant-client>=1.9.0               # Vector database backing the Voice Marketplace's semantic voice search
+stripe>=9.0.0                      # Stripe Connect payments for the Voice Marketplace (seller payouts, buyer checkout)
 
 # ------------------------------------------------------------------------------
 # Expressive Voice Synthesis (Deep Learning Models)
