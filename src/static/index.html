@@ -1559,6 +1559,14 @@
         // etc. threw "not defined" in the browser console despite existing in the file.
         // Moved here, inside the real <script> block, so it actually runs.
 
+        // Minimal HTML-escaping helper for text interpolated into innerHTML
+        // (used by readinessBadge/renderOperationalReadiness/renderTierViewSwitcher).
+        function esc(str) {
+            return String(str ?? "").replace(/[&<>"']/g, ch => ({
+                "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+            }[ch]));
+        }
+
         function selectedBookName() {
             const select = document.getElementById("bookSelect");
             return select ? select.value : "";
