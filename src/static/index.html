@@ -1568,8 +1568,17 @@
         }
 
         function selectedBookName() {
+            // /api/console/* endpoints key off the pipeline directory name, which
+            // is the manuscript stem with no extension (see console_api.py's
+            // _safe_book / PIPELINE_ROOT layout). The dropdown's value is the raw
+            // source filename (e.g. "Book Title.epub"), matching what /api/analyze
+            // expects -- so strip the extension here rather than changing the
+            // dropdown value itself.
             const select = document.getElementById("bookSelect");
-            return select ? select.value : "";
+            const filename = select ? select.value : "";
+            if (!filename) return "";
+            const dot = filename.lastIndexOf(".");
+            return dot > 0 ? filename.slice(0, dot) : filename;
         }
 
         function readinessBadge(label, ready, message) {
