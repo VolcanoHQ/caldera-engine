@@ -2583,7 +2583,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = 8082
+    # CALDERA_GUI_PORT: override for dev machines where 8082 is unavailable
+    # (e.g. reserved by WSL2/Docker's networking, invisible to netstat but
+    # still refusing binds).
+    port = int(os.getenv("CALDERA_GUI_PORT", "8082"))
     server_address = ('', port)
     # Boot sequence: self-heal a wedged GPU driver (re-execs if needed), then
     # run the environment doctor so a broken runtime is visible at startup,

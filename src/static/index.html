@@ -130,11 +130,41 @@
             if (radio) radio.checked = true;
         }
 
+        // Highlights the selected tier card in the Express Mode Audio Synthesis panel.
+        function highlightExpressTierCard(n) {
+            [1, 2, 3].forEach(t => {
+                const card = document.getElementById(`expressTierCard${t}`);
+                if (!card) return;
+                if (t === n) {
+                    card.style.borderColor = "var(--accent-teal)";
+                    card.style.background = "rgba(20,184,166,0.08)";
+                } else {
+                    card.style.borderColor = "var(--border-color)";
+                    card.style.background = "rgba(255,255,255,0.01)";
+                }
+            });
+        }
+
+        // Called when the user picks a tier from the Express Mode Audio Synthesis panel.
+        function selectExpressTier(n) {
+            highlightExpressTierCard(n);
+            const radio = document.querySelector(`input[name="productionTier"][value="${n}"]`);
+            if (radio) radio.checked = true;
+            currentActiveTier = n;
+
+            // If a manuscript is already loaded, re-analyze at the new tier immediately.
+            const select = document.getElementById("bookSelect");
+            if (select && select.value) {
+                loadBookFromDropdown();
+            }
+        }
+
         // Syncs Project Setup productionTier radios with a given tier value.
         function syncProductionTierRadio(tier) {
             const radio = document.querySelector(`input[name="productionTier"][value="${tier}"]`);
             if (radio) radio.checked = true;
             currentActiveTier = parseInt(tier, 10) || 1;
+            highlightExpressTierCard(currentActiveTier);
             renderTierViewSwitcher();
         }
 
@@ -1040,6 +1070,28 @@
                         <div class="glass-card" style="flex: 1; min-width: 300px; display: flex; flex-direction: column; gap: 24px; padding: 32px; height: fit-content; background: rgba(17, 24, 39, 0.45);">
                             <h3 style="color: var(--accent-teal); margin: 0; font-size: 18px; font-weight: 700; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">Audio Synthesis</h3>
 
+                            <!-- Production Tier Selection -->
+                            <div style="display: flex; flex-direction: column; gap: 8px;">
+                                <label style="font-size: 13px; color: var(--text-muted); font-weight: 600;">Production Tier</label>
+                                <div style="display: flex; gap: 8px;">
+                                    <label id="expressTierCard1" onclick="selectExpressTier(1)" style="flex:1; display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:10px 6px; border:1px solid var(--accent-teal); background:rgba(20,184,166,0.08); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                                        <input type="radio" name="productionTier" value="1" checked style="display:none;">
+                                        <div style="font-weight:700; font-size:12.5px; color:var(--text-main);">Tier 1</div>
+                                        <div style="font-size:10.5px; color:var(--text-muted);">Solo Narrator</div>
+                                    </label>
+                                    <label id="expressTierCard2" onclick="selectExpressTier(2)" style="flex:1; display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:10px 6px; border:1px solid var(--border-color); background:rgba(255,255,255,0.01); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                                        <input type="radio" name="productionTier" value="2" style="display:none;">
+                                        <div style="font-weight:700; font-size:12.5px; color:var(--text-main);">Tier 2</div>
+                                        <div style="font-size:10.5px; color:var(--text-muted);">Multi-Voice Cast</div>
+                                    </label>
+                                    <label id="expressTierCard3" onclick="selectExpressTier(3)" style="flex:1; display:flex; flex-direction:column; align-items:center; text-align:center; gap:2px; padding:10px 6px; border:1px solid var(--border-color); background:rgba(255,255,255,0.01); border-radius:var(--radius-sm); cursor:pointer; transition:all 0.2s ease;">
+                                        <input type="radio" name="productionTier" value="3" style="display:none;">
+                                        <div style="font-weight:700; font-size:12.5px; color:var(--text-main);">Tier 3</div>
+                                        <div style="font-size:10.5px; color:var(--text-muted);">Audio Drama</div>
+                                    </label>
+                                </div>
+                            </div>
+
                             <!-- Voice Selection dropdown -->
                             <div style="display: flex; flex-direction: column; gap: 8px;">
                                 <label style="font-size: 13px; color: var(--text-muted); font-weight: 600;">Choose Narrator Voice</label>
@@ -1100,14 +1152,14 @@
                         <label style="display: block; margin-bottom: 12px; color: var(--text-muted);">2. Choose Production Tier</label>
                         <div style="display: flex; gap: 16px; flex-direction: column;">
                             <label style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-                                <input type="radio" name="productionTier" value="1" checked style="margin-top: 4px;" onchange="loadBookFromDropdown()">
+                                <input type="radio" name="productionTier" value="1" checked style="margin-top: 4px;" onchange="highlightExpressTierCard(1); loadBookFromDropdown()">
                                 <div>
                                     <div style="font-weight: 600; font-size: 15px;">Tier 1: Solo Narrator</div>
                                     <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">A single voice actor reads the entire book (prose and dialogue).</div>
                                 </div>
                             </label>
                             <label style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-                                <input type="radio" name="productionTier" value="2" style="margin-top: 4px;" onchange="loadBookFromDropdown()">
+                                <input type="radio" name="productionTier" value="2" style="margin-top: 4px;" onchange="highlightExpressTierCard(2); loadBookFromDropdown()">
                                 <div>
                                     <div style="font-weight: 600; font-size: 15px;">Tier 2: Multi-Voice Cast</div>
                                     <div style="font-weight: 500; color: var(--accent-violet); font-size: 11px; margin-top: 4px;">* Recommended for complex novels *</div>
@@ -1115,7 +1167,7 @@
                                 </div>
                             </label>
                             <label style="display: flex; gap: 12px; align-items: flex-start; cursor: pointer; padding: 16px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);">
-                                <input type="radio" name="productionTier" value="3" style="margin-top: 4px;" onchange="loadBookFromDropdown()">
+                                <input type="radio" name="productionTier" value="3" style="margin-top: 4px;" onchange="highlightExpressTierCard(3); loadBookFromDropdown()">
                                 <div>
                                     <div style="font-weight: 600; font-size: 15px;">Tier 3: Audio Drama</div>
                                     <div style="font-size: 12.5px; color: var(--text-muted); margin-top: 4px;">Full cast, ambient soundscapes, and scored music (Neural Attribution).</div>
