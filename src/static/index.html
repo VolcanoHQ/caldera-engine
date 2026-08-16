@@ -40,207 +40,6 @@
             --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        function selectedBookName() {
-            const select = document.getElementById("bookSelect");
-            return select ? select.value : "";
-        }
-
-        function readinessBadge(label, ready, message) {
-            const color = ready ? "var(--accent-teal)" : "var(--accent-rose)";
-            const dot = ready ? "●" : "○";
-            return `<span style="display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; color: ${color};">
-                ${dot} <strong>${label}</strong> <span style="color: var(--text-muted); font-weight: 400;">${esc(message || "")}</span>
-            </span>`;
-        }
-
-        function renderOperationalReadiness() {
-            const tierEl = document.getElementById("macroTierReadiness");
-            const preflightEl = document.getElementById("macroPreflightReadiness");
-            if (tierEl) {
-                if (!currentTierReadiness) {
-                    tierEl.textContent = "Tier readiness unavailable.";
-                } else {
-                    tierEl.innerHTML =
-                        readinessBadge("Tier 1", !!currentTierReadiness.tier1?.ready, currentTierReadiness.tier1?.message) +
-                        readinessBadge("Tier 2", !!currentTierReadiness.tier2?.ready, currentTierReadiness.tier2?.message) +
-                        readinessBadge("Tier 3", !!currentTierReadiness.tier3?.ready, currentTierReadiness.tier3?.message);
-                }
-            }
-            if (preflightEl) {
-                if (!currentPreflight) {
-                    preflightEl.textContent = "Runtime preflight status not loaded yet.";
-                } else {
-                    const failing = (currentPreflight.checks || []).filter(c => c.status !== "ok");
-                    preflightEl.innerHTML = `<strong style="color:${currentPreflight.status === "ok" ? "var(--accent-teal)" : "var(--accent-rose)"};">
-                        Runtime: ${String(currentPreflight.status || "unknown").toUpperCase()}
-                    </strong> ${failing.length ? "— " + failing.map(c => `${esc(c.check)} (${esc(c.status)})`).join(", ") : "— all key dependencies found."}`;
-                }
-            }
-            renderTierViewSwitcher();
-        }
-
-        async function refreshEnvironmentPreflight() {
-            try {
-                const response = await fetch(`${API_BASE}/api/console/preflight`);
-                if (!response.ok) {
-                    throw new Error("Failed preflight check");
-                }
-                currentPreflight = await response.json();
-                renderOperationalReadiness();
-            } catch (err) {
-                console.error("Preflight check failed:", err);
-            }
-        }
-
-        async function refreshTierReadiness() {
-            const book = selectedBookName();
-            if (!book) {
-                currentTierReadiness = null;
-                renderOperationalReadiness();
-                return;
-            }
-            try {
-                const response = await fetch(`${API_BASE}/api/console/tier_readiness?book=${encodeURIComponent(book)}`);
-                if (!response.ok) {
-                    throw new Error("Failed tier readiness");
-                }
-                currentTierReadiness = await response.json();
-                renderOperationalReadiness();
-            } catch (err) {
-                console.error("Tier readiness failed:", err);
-            }
-        }
-
-        // ── Tier selection helpers ──────────────────────────────────────────────
-
-        // Highlights the selected tier card in the upload modal.
-        function selectUploadTier(n) {
-            [1, 2, 3].forEach(t => {
-                const card = document.getElementById(`uploadTierCard${t}`);
-                if (!card) return;
-                if (t === n) {
-                    card.style.borderColor = "var(--accent-teal)";
-                    card.style.background = "rgba(20,184,166,0.08)";
-                } else {
-                    card.style.borderColor = "var(--border-color)";
-                    card.style.background = "rgba(255,255,255,0.01)";
-                }
-            });
-            const radio = document.querySelector(`input[name="uploadModalTier"][value="${n}"]`);
-            if (radio) radio.checked = true;
-        }
-
-        // Highlights the selected tier card in the Express Mode Audio Synthesis panel.
-        function highlightExpressTierCard(n) {
-            [1, 2, 3].forEach(t => {
-                const card = document.getElementById(`expressTierCard${t}`);
-                if (!card) return;
-                if (t === n) {
-                    card.style.borderColor = "var(--accent-teal)";
-                    card.style.background = "rgba(20,184,166,0.08)";
-                } else {
-                    card.style.borderColor = "var(--border-color)";
-                    card.style.background = "rgba(255,255,255,0.01)";
-                }
-            });
-        }
-
-        // Called when the user picks a tier from the Express Mode Audio Synthesis panel.
-        function selectExpressTier(n) {
-            highlightExpressTierCard(n);
-            const radio = document.querySelector(`input[name="productionTier"][value="${n}"]`);
-            if (radio) radio.checked = true;
-            currentActiveTier = n;
-
-            // If a manuscript is already loaded, re-analyze at the new tier immediately.
-            const select = document.getElementById("bookSelect");
-            if (select && select.value) {
-                loadBookFromDropdown();
-            }
-        }
-
-        // Syncs Project Setup productionTier radios with a given tier value.
-        function syncProductionTierRadio(tier) {
-            const radio = document.querySelector(`input[name="productionTier"][value="${tier}"]`);
-            if (radio) radio.checked = true;
-            currentActiveTier = parseInt(tier, 10) || 1;
-            highlightExpressTierCard(currentActiveTier);
-            renderTierViewSwitcher();
-        }
-
-        // Re-analyzes the current book at a different tier view.
-        async function switchViewTier(tier) {
-            const book = selectedBookName();
-            if (!book) return;
-            syncProductionTierRadio(tier);
-            await loadBookFromDropdown();
-        }
-
-        // Renders the tier view switcher buttons in the Macro tab.
-        function renderTierViewSwitcher() {
-            const container = document.getElementById("macroTierViewSwitcher");
-            if (!container) return;
-            const tiers = [
-                { n: 1, label: "Tier 1 — Solo Narrator" },
-                { n: 2, label: "Tier 2 — Multi-Voice Cast" },
-                { n: 3, label: "Tier 3 — Audio Drama" },
-            ];
-            container.innerHTML = tiers.map(({ n, label }) => {
-                const isActive = n === currentActiveTier;
-                const ready = currentTierReadiness && currentTierReadiness[`tier${n}`]?.ready;
-                const dot = ready ? "●" : "○";
-                const dotColor = ready ? "var(--accent-teal)" : "var(--text-dark)";
-                const bg = isActive ? "rgba(139,92,246,0.18)" : "rgba(255,255,255,0.02)";
-                const border = isActive ? "var(--accent-violet)" : "var(--border-color)";
-                const color = isActive ? "var(--text-main)" : "var(--text-muted)";
-                return `<button onclick="switchViewTier(${n})" style="flex:1; min-width:140px; background:${bg}; border:1px solid ${border}; color:${color}; border-radius:var(--radius-sm); padding:10px 14px; font-size:12.5px; font-weight:${isActive ? '700' : '500'}; cursor:pointer; transition:all 0.2s ease; text-align:left; display:flex; align-items:center; gap:8px;">
-                    <span style="color:${dotColor}; font-size:10px;">${dot}</span>${esc(label)}
-                </button>`;
-            }).join("");
-        }
-
-        async function normalizeChapterTitles() {
-            const book = selectedBookName();
-            if (!book) return;
-            showLoading("Normalizing chapter titles", "Converting chapter numerals and refreshing canonical chapter names...");
-            try {
-                const response = await fetch(`${API_BASE}/api/console/normalize_chapters`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ book })
-                });
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.error || "Normalize chapters failed");
-                }
-                const result = await response.json();
-                await loadBookFromDropdown();
-            } finally {
-                hideLoading();
-            }
-        }
-
-        async function rebuildAllFromCanonical() {
-            const book = selectedBookName();
-            if (!book) return;
-            showLoading("Rebuilding from canonical structure", "Refreshing analysis caches and regenerating director artifacts...");
-            try {
-                const response = await fetch(`${API_BASE}/api/console/rebuild_all`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ book, include_qc: false, sync_mempalace: false })
-                });
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.error || "Rebuild-all failed");
-                }
-                await response.json();
-                await loadBookFromDropdown();
-            } finally {
-                hideLoading();
-            }
-        }
-        
         * {
             box-sizing: border-box;
             margin: 0;
@@ -1752,6 +1551,214 @@
         let currentTierReadiness = null;
         let currentPreflight = null;
         let currentActiveTier = 1;
+
+        // ── Environment preflight / tier readiness / tier selection helpers ────
+        // NOTE: this block used to be mistakenly embedded inside the <style> tag
+        // (lines 43-242 of an earlier version) where it was inert CSS text rather
+        // than executable JS -- that's why refreshEnvironmentPreflight/selectUploadTier/
+        // etc. threw "not defined" in the browser console despite existing in the file.
+        // Moved here, inside the real <script> block, so it actually runs.
+
+        function selectedBookName() {
+            const select = document.getElementById("bookSelect");
+            return select ? select.value : "";
+        }
+
+        function readinessBadge(label, ready, message) {
+            const color = ready ? "var(--accent-teal)" : "var(--accent-rose)";
+            const dot = ready ? "●" : "○";
+            return `<span style="display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; color: ${color};">
+                ${dot} <strong>${label}</strong> <span style="color: var(--text-muted); font-weight: 400;">${esc(message || "")}</span>
+            </span>`;
+        }
+
+        function renderOperationalReadiness() {
+            const tierEl = document.getElementById("macroTierReadiness");
+            const preflightEl = document.getElementById("macroPreflightReadiness");
+            if (tierEl) {
+                if (!currentTierReadiness) {
+                    tierEl.textContent = "Tier readiness unavailable.";
+                } else {
+                    tierEl.innerHTML =
+                        readinessBadge("Tier 1", !!currentTierReadiness.tier1?.ready, currentTierReadiness.tier1?.message) +
+                        readinessBadge("Tier 2", !!currentTierReadiness.tier2?.ready, currentTierReadiness.tier2?.message) +
+                        readinessBadge("Tier 3", !!currentTierReadiness.tier3?.ready, currentTierReadiness.tier3?.message);
+                }
+            }
+            if (preflightEl) {
+                if (!currentPreflight) {
+                    preflightEl.textContent = "Runtime preflight status not loaded yet.";
+                } else {
+                    const failing = (currentPreflight.checks || []).filter(c => c.status !== "ok");
+                    preflightEl.innerHTML = `<strong style="color:${currentPreflight.status === "ok" ? "var(--accent-teal)" : "var(--accent-rose)"};">
+                        Runtime: ${String(currentPreflight.status || "unknown").toUpperCase()}
+                    </strong> ${failing.length ? "— " + failing.map(c => `${esc(c.check)} (${esc(c.status)})`).join(", ") : "— all key dependencies found."}`;
+                }
+            }
+            renderTierViewSwitcher();
+        }
+
+        async function refreshEnvironmentPreflight() {
+            try {
+                const response = await fetch(`${API_BASE}/api/console/preflight`);
+                if (!response.ok) {
+                    throw new Error("Failed preflight check");
+                }
+                currentPreflight = await response.json();
+                renderOperationalReadiness();
+            } catch (err) {
+                console.error("Preflight check failed:", err);
+            }
+        }
+
+        async function refreshTierReadiness() {
+            const book = selectedBookName();
+            if (!book) {
+                currentTierReadiness = null;
+                renderOperationalReadiness();
+                return;
+            }
+            try {
+                const response = await fetch(`${API_BASE}/api/console/tier_readiness?book=${encodeURIComponent(book)}`);
+                if (!response.ok) {
+                    throw new Error("Failed tier readiness");
+                }
+                currentTierReadiness = await response.json();
+                renderOperationalReadiness();
+            } catch (err) {
+                console.error("Tier readiness failed:", err);
+            }
+        }
+
+        // ── Tier selection helpers ──────────────────────────────────────────────
+
+        // Highlights the selected tier card in the upload modal.
+        function selectUploadTier(n) {
+            [1, 2, 3].forEach(t => {
+                const card = document.getElementById(`uploadTierCard${t}`);
+                if (!card) return;
+                if (t === n) {
+                    card.style.borderColor = "var(--accent-teal)";
+                    card.style.background = "rgba(20,184,166,0.08)";
+                } else {
+                    card.style.borderColor = "var(--border-color)";
+                    card.style.background = "rgba(255,255,255,0.01)";
+                }
+            });
+            const radio = document.querySelector(`input[name="uploadModalTier"][value="${n}"]`);
+            if (radio) radio.checked = true;
+        }
+
+        // Highlights the selected tier card in the Express Mode Audio Synthesis panel.
+        function highlightExpressTierCard(n) {
+            [1, 2, 3].forEach(t => {
+                const card = document.getElementById(`expressTierCard${t}`);
+                if (!card) return;
+                if (t === n) {
+                    card.style.borderColor = "var(--accent-teal)";
+                    card.style.background = "rgba(20,184,166,0.08)";
+                } else {
+                    card.style.borderColor = "var(--border-color)";
+                    card.style.background = "rgba(255,255,255,0.01)";
+                }
+            });
+        }
+
+        // Called when the user picks a tier from the Express Mode Audio Synthesis panel.
+        function selectExpressTier(n) {
+            highlightExpressTierCard(n);
+            const radio = document.querySelector(`input[name="productionTier"][value="${n}"]`);
+            if (radio) radio.checked = true;
+            currentActiveTier = n;
+
+            // If a manuscript is already loaded, re-analyze at the new tier immediately.
+            const select = document.getElementById("bookSelect");
+            if (select && select.value) {
+                loadBookFromDropdown();
+            }
+        }
+
+        // Syncs Project Setup productionTier radios with a given tier value.
+        function syncProductionTierRadio(tier) {
+            const radio = document.querySelector(`input[name="productionTier"][value="${tier}"]`);
+            if (radio) radio.checked = true;
+            currentActiveTier = parseInt(tier, 10) || 1;
+            highlightExpressTierCard(currentActiveTier);
+            renderTierViewSwitcher();
+        }
+
+        // Re-analyzes the current book at a different tier view.
+        async function switchViewTier(tier) {
+            const book = selectedBookName();
+            if (!book) return;
+            syncProductionTierRadio(tier);
+            await loadBookFromDropdown();
+        }
+
+        // Renders the tier view switcher buttons in the Macro tab.
+        function renderTierViewSwitcher() {
+            const container = document.getElementById("macroTierViewSwitcher");
+            if (!container) return;
+            const tiers = [
+                { n: 1, label: "Tier 1 — Solo Narrator" },
+                { n: 2, label: "Tier 2 — Multi-Voice Cast" },
+                { n: 3, label: "Tier 3 — Audio Drama" },
+            ];
+            container.innerHTML = tiers.map(({ n, label }) => {
+                const isActive = n === currentActiveTier;
+                const ready = currentTierReadiness && currentTierReadiness[`tier${n}`]?.ready;
+                const dot = ready ? "●" : "○";
+                const dotColor = ready ? "var(--accent-teal)" : "var(--text-dark)";
+                const bg = isActive ? "rgba(139,92,246,0.18)" : "rgba(255,255,255,0.02)";
+                const border = isActive ? "var(--accent-violet)" : "var(--border-color)";
+                const color = isActive ? "var(--text-main)" : "var(--text-muted)";
+                return `<button onclick="switchViewTier(${n})" style="flex:1; min-width:140px; background:${bg}; border:1px solid ${border}; color:${color}; border-radius:var(--radius-sm); padding:10px 14px; font-size:12.5px; font-weight:${isActive ? '700' : '500'}; cursor:pointer; transition:all 0.2s ease; text-align:left; display:flex; align-items:center; gap:8px;">
+                    <span style="color:${dotColor}; font-size:10px;">${dot}</span>${esc(label)}
+                </button>`;
+            }).join("");
+        }
+
+        async function normalizeChapterTitles() {
+            const book = selectedBookName();
+            if (!book) return;
+            showLoading("Normalizing chapter titles", "Converting chapter numerals and refreshing canonical chapter names...");
+            try {
+                const response = await fetch(`${API_BASE}/api/console/normalize_chapters`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ book })
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || "Normalize chapters failed");
+                }
+                const result = await response.json();
+                await loadBookFromDropdown();
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function rebuildAllFromCanonical() {
+            const book = selectedBookName();
+            if (!book) return;
+            showLoading("Rebuilding from canonical structure", "Refreshing analysis caches and regenerating director artifacts...");
+            try {
+                const response = await fetch(`${API_BASE}/api/console/rebuild_all`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ book, include_qc: false, sync_mempalace: false })
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || "Rebuild-all failed");
+                }
+                await response.json();
+                await loadBookFromDropdown();
+            } finally {
+                hideLoading();
+            }
+        }
 
         // Tab Slicer state
         let activeSlicerChapter = null;
