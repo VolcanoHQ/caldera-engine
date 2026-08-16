@@ -60,8 +60,19 @@ class MemPalace:
 
     def _init_sqlite(self):
         """Initializes the SQLite database tables (Wings, Rooms, Drawers)."""
-        self.conn = sqlite3.connect(self.sqlite_path)
+        # gui_server.py serves requests on a ThreadingHTTPServer, and several
+        # request handlers (preview, render jobs, boot checks) each open their
+        # own short-lived MemPalace/sqlite3 connection against the same file.
+        # The default sqlite3 timeout is 5s with no built-in retry, and without
+        # WAL mode a writer holds an exclusive file lock -- on Windows in
+        # particular that combination produced frequent transient "database is
+        # locked" errors under concurrent access. WAL allows readers to proceed
+        # while a writer commits, and a longer busy_timeout makes sqlite retry
+        # internally instead of raising immediately.
+        self.conn = sqlite3.connect(self.sqlite_path, timeout=30)
         self.conn.execute("PRAGMA foreign_keys = ON;")
+        self.conn.execute("PRAGMA journal_mode = WAL;")
+        self.conn.execute("PRAGMA busy_timeout = 30000;")
         cursor = self.conn.cursor()
         
         # Table 1: Wings (Logical Chapters / Scenes Context)
@@ -496,6 +507,16 @@ class MemPalace:
         metadata_json = json.dumps(metadata) if metadata else "{}"
         cursor = self.conn.cursor()
         try:
+            # Ad-hoc callers (e.g. voice preview synthesis) log a room against a
+            # synthetic wing_id ("wing_c1") that was never created via log_wing(),
+            # which previously tripped the rooms.wing_id foreign key constraint on
+            # every preview request. Auto-create a placeholder wing on demand so
+            # room logging never fails just because no real chapter wing exists yet.
+            cursor.execute("""
+            INSERT INTO wings (wing_id, chapter_number, title, metadata_json)
+            VALUES (?, 0, ?, '{}')
+            ON CONFLICT(wing_id) DO NOTHING;
+            """, (wing_id, wing_id))
             cursor.execute("""
             INSERT INTO rooms (room_id, wing_id, line_number, character_name, dialogue_text, emotion, audio_output_path, metadata_json, confidence)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
