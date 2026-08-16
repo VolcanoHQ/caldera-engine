@@ -26,8 +26,14 @@ stripe>=9.0.0                      # Stripe Connect payments for the Voice Marke
 # Expressive Voice Synthesis (Deep Learning Models)
 # ------------------------------------------------------------------------------
 torch>=2.0.0                      # Core deep learning framework for models and GPU tensor processing
-transformers>=4.30.0              # Suno Bark generation & Wav2Vec2 audio transcript evaluation models
+# transformers 5.x removed transformers.pytorch_utils.isin_mps_friendly, which
+# coqui-tts's tortoise/XTTS autoregressive layer still imports as of 0.27.5 --
+# pip happily resolves to the newest 5.x under an unbounded >= pin and breaks
+# `import TTS` at runtime. Pin to the last compatible 4.x line until upstream
+# coqui-tts adds real transformers 5.x support.
+transformers>=4.30.0,<5.0.0        # Suno Bark generation & Wav2Vec2 audio transcript evaluation models
 coqui-tts>=0.22.0                 # Advanced XTTS-v2 zero-shot multilingual voice cloning synthesizer
+edge-tts>=6.1.0                   # Lightweight cloud fallback voice engine when XTTS-v2 is unavailable/fails
 
 # ------------------------------------------------------------------------------
 # Dashboard GUI Server & Backend Orchestration
