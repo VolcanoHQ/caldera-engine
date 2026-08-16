@@ -24,7 +24,7 @@ between "internal tool" and "MVP" today.
 
 | Product | Repo | Status |
 |---|---|---|
-| **Caldera Engine** (was Firespeaker) — manuscript → audiobook pipeline, Console, Express Mode GUI | `VolcanoHQ/caldera-engine` (this repo) | Core pipeline MVP-complete; GUI has one known active bug (§5) |
+| **Caldera Engine** (was Firespeaker) — manuscript → audiobook pipeline, Console, Express Mode GUI | `VolcanoHQ/caldera-engine` (this repo) | Core pipeline MVP-complete; Express tier-selector bug fixed and root-caused (§3) |
 | **Volcano Studios Voice Marketplace** — standalone marketplace for voice actors to list/sell voices & variations | `VolcanoHQ/voice_marketplace` (separate repo, `d:\source\volcano-studios-voice-marketplace`) | Extracted, running locally via Docker (port 8010), talks to this app over HTTP via `src/marketplace_client.py` |
 
 They integrate over a plain HTTP contract (`MARKETPLACE_API_URL` in
@@ -60,21 +60,25 @@ independently.
   checkpoints are never pushed to the marketplace product.
 - **GPU synthesis path** (`CALDERA_TTS_DEVICE=auto/cpu/cuda`): 3.4× realtime
   speedup measured, OOM-safe demotion to CPU mid-render.
+- **Express Mode tier selector bug** (`3a0a8dc`, `5c9a0d1`, `34fff42`) —
+  fully root-caused and fixed across three commits: (1) the Express "Audio
+  Synthesis" panel never had a tier-card selector wired to `productionTier`
+  at all (Express mode hides the Pro-Mode tab that owned the only radios) —
+  added one; (2) the *real* root cause of "nothing responds to clicks" was
+  that ~13 JS functions (tier readiness, environment preflight, tier
+  selection) were physically located inside the `<style>` tag instead of
+  `<script>` — browsers silently discard unrecognized text in `<style>` as
+  invalid CSS rather than erroring, so this code never executed; moved it
+  into the real `<script>` block; (3) once that code started running, a
+  second latent bug surfaced — `esc()` was called in 3 places but never
+  defined anywhere in the file — added a minimal HTML-escape helper. A
+  proactive scan for other undefined-function references in the script
+  turned up nothing else. Confirmed via real browser console errors
+  (not just HTML-source inspection, which had given false confidence
+  earlier) at each step.
 
 ### 🔧 In Progress
 
-- **Express Mode tier selector bug** — user reports Tier 2/3 still not
-  clickable after an initial fix. First fix (adding a tier-card selector to
-  the Express "Audio Synthesis" panel, since it never had one — Express mode
-  hides the Pro-Mode tab that owned the only `productionTier` radios) is
-  applied locally in `src/static/index.html` / `src/gui_server.py` but
-  **not yet committed**, and the bug is **not yet confirmed resolved** — needs
-  a fresh server boot + a real click-through test in an actual browser
-  (previous verification was curl/HTML-source only, which cannot catch
-  CSS/z-index/overlay issues or a second code path). **Next action:** reboot
-  the GUI server cleanly, reproduce in a real browser with dev tools open,
-  check for a JS console error or an overlapping element intercepting clicks
-  before assuming the HTML fix alone was sufficient.
 - **Local dev environment quirks** (Windows-only, workarounds in place, not
   root-caused upstream): port 8082 unbindable on this machine (using
   `CALDERA_GUI_PORT=8085` instead), console `UnicodeEncodeError` on boot
@@ -147,8 +151,11 @@ Caldera Engine (this repo)                Volcano Studios Voice Marketplace (sep
   session work had never actually been committed; that's been repaired and
   pushed, but it's a reminder to `git status`/commit more frequently rather
   than relying on long-lived uncommitted working trees.
-- **The Express-mode tier bug is not yet confirmed fixed** — see §3 above,
-  treat as open until verified in a real browser.
+- **Verifying JS fixes via HTML-source/curl inspection alone is not
+  sufficient** — the tier-selector bug looked fixed twice by that method
+  before real browser console errors revealed it wasn't. Always confirm
+  JS-touching fixes with an actual browser (or at minimum a JS interpreter
+  executing the real runtime path, not just a syntax check).
 
 ---
 
