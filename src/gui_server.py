@@ -70,7 +70,7 @@ root_logger.addHandler(deque_handler)
 
 logger = logging.getLogger("StudioServer")
 
-TIER1_GUI_PIPELINE = "tier1_manifest_v1"
+TIER1_GUI_PIPELINE = "tier1_manifest_v2"  # v2: cast/scene identification always-on (see docs/Cast_Scene_Identification_Design.md)
 
 
 def _feedback_hash(value: str) -> str:
@@ -198,7 +198,9 @@ def build_gui_hierarchy(filepath: str, tier: int):
             except Exception as e:
                 logger.warning(f"Canonical structure load failed for {book}; falling back to Tier 1 manifest: {e}")
         from src.tier_1_parser import ingest_manuscript_tier_1
-        manifest = ingest_manuscript_tier_1(filepath)
+        # Cast/scene identification (full LLM attribution pass) always runs
+        # now, regardless of tier -- see docs/Cast_Scene_Identification_Design.md.
+        manifest = ingest_manuscript_tier_1(filepath, enable_llm_enrichment=True, resume_enrichment=True)
         try:
             structure = load_structure(
                 book,

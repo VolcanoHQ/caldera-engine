@@ -197,8 +197,8 @@ def run_job(job_id: str) -> int:
         else:
             manifest = ingest_manuscript_tier_1(
                 job["source_file"],
-                enable_llm_enrichment=(tier >= 2),
-                resume_enrichment=(tier >= 2),
+                enable_llm_enrichment=True,
+                resume_enrichment=True,
             )
         manifest_path = os.path.join(RENDERS_DIR, f"{job['book']}_manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as f:

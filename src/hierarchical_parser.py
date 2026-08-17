@@ -132,37 +132,32 @@ class HierarchicalParser:
         raw_content = self.analyzer.text_pipeline.normalize_typography(raw_content)
         quote_style = "double"
         
-        if self.production_tier == 1:
-            logger.info("Tier 1 selected: Bypassing global character extraction and MemPalace drawers. Forcing Narrator.")
-            global_characters = ["Narrator"]
-            confirmed_merges = {}
-            global_merge_map = {}
-            global_confidence_scores = {}
-            merge_decisions = []
-        else:
-            # 0. Coreference baseline to build global character list
-            global_db = self.analyzer._resolve_coreferences(raw_content)
-            global_characters = list(global_db.keys())
-            
-            # Seed with registered database drawers and load confirmed merges
-            confirmed_merges = {}
-            try:
-                from src.spatial_memory import MemPalace
-                palace = MemPalace()
-                # 1. Load registered drawers
-                cursor = palace.conn.cursor()
-                cursor.execute("SELECT character_name FROM drawers;")
-                for row in cursor.fetchall():
-                    if row[0] != "Narrator" and row[0] not in global_characters:
-                        global_characters.append(row[0])
-                # 2. Load confirmed merges
-                confirmed_merges = palace.get_confirmed_merges(filename)
-                palace.close()
-            except Exception as e:
-                logger.warning(f"Could not seed or load confirmed merges from MemPalace: {e}")
+        # Cast/scene identification always runs regardless of production tier
+        # (tier only controls voice_mode / production complexity downstream --
+        # see docs/Cast_Scene_Identification_Design.md).
+        # 0. Coreference baseline to build global character list
+        global_db = self.analyzer._resolve_coreferences(raw_content)
+        global_characters = list(global_db.keys())
 
-            # 0.5 Consolidate duplicate characters using SequenceMatcher similarity & substring matching
-            global_characters, global_merge_map, global_confidence_scores, merge_decisions = consolidate_characters(global_characters, confirmed_merges)
+        # Seed with registered database drawers and load confirmed merges
+        confirmed_merges = {}
+        try:
+            from src.spatial_memory import MemPalace
+            palace = MemPalace()
+            # 1. Load registered drawers
+            cursor = palace.conn.cursor()
+            cursor.execute("SELECT character_name FROM drawers;")
+            for row in cursor.fetchall():
+                if row[0] != "Narrator" and row[0] not in global_characters:
+                    global_characters.append(row[0])
+            # 2. Load confirmed merges
+            confirmed_merges = palace.get_confirmed_merges(filename)
+            palace.close()
+        except Exception as e:
+            logger.warning(f"Could not seed or load confirmed merges from MemPalace: {e}")
+
+        # 0.5 Consolidate duplicate characters using SequenceMatcher similarity & substring matching
+        global_characters, global_merge_map, global_confidence_scores, merge_decisions = consolidate_characters(global_characters, confirmed_merges)
 
         # 1. Segment Parts
         part_blocks = self._split_into_parts(raw_content)
@@ -477,12 +472,10 @@ def parse_manuscript_for_segment(self, segment_text: str, file_name: str, chapte
                         return "char_unknown_fallback"
                     return "char_" + re.sub(r'[^a-z0-9_]', '', name.lower().replace(" ", "_").replace(".", ""))
 
-                if production_tier == 1:
-                    # Tier 1 Bypass: All dialogue is deterministically read by the Narrator
-                    assigned_character = "Narrator"
-                    attribution_method = "Tier 1 Default"
-                    found_speaker = True
-                    high_confidence = True
+                # Cast identification always runs regardless of tier now --
+                # attribution below (dialogue tag / speaker lock / LLM at
+                # tier>=3) applies uniformly. See
+                # docs/Cast_Scene_Identification_Design.md.
 
                 # 1. Dialogue Tag Association (direct speech verb check in paragraph narrative context)
                 if not found_speaker and narrative_context:

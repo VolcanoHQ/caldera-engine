@@ -116,8 +116,8 @@ lists, future analytics), and only use the shared reference wav as the
    always runs; `production_tier` no longer read by these code paths at
    all.
 2. **`render_job.py`**: change `enable_llm_enrichment=(tier >= 2)` to
-   always `True` (or gate on a separate, cheaper always-on setting if LLM
-   cost is a concern — see open questions).
+   always `True` (confirmed decision — full LLM pass for every tier, see
+   §5).
 3. **`production_mixer.mix_voice_track`**: replace the `single_narrator`
    bool parameter with a `voice_mode: Literal["single_narrator_modulated",
    "multi_voice"]`. Drop the `d["character"] = "Narrator"` overwrite.
@@ -145,30 +145,29 @@ lists, future analytics), and only use the shared reference wav as the
    change) and should reprocess automatically on next analyze, not require
    manual cache-busting.
 
-## 5. Open questions (need a decision before implementation starts)
+## 5. Decisions (confirmed with user 2026-08-16)
 
-1. **LLM cost at Tier 1**: attribution enrichment currently calls an LLM
-   (Gemini free tier → Groq → Ollama fallback chain per `main.py`'s
-   `--enable-llm-enrichment` help text). Making it always-on means every
-   Tier 1 book now pays that cost/latency too. Is that acceptable, or
-   should Tier 1 use a cheaper heuristic-only attribution pass (already
-   partially implemented as the "noisy heuristic" fallback mentioned in
-   `tier_1_parser.py` comments) instead of the full LLM pass?
-2. **Naming**: is `voice_mode` / `single_narrator_modulated` /
-   `multi_voice` the right vocabulary, or should this reuse
-   "tier" terminology somehow (e.g., "Tier 1 voice, Tier 2 cast") to avoid
-   introducing a whole new concept in the UI?
-3. **Default per-character modulation**: when a character is identified
-   but the user never opens Cast Manager to tune them, what's the default
-   pitch/speed delta? All-neutral (identical to Narrator, i.e., no
-   perceptible differentiation) — should there be a cheap automatic
-   heuristic (e.g., hash-based small pitch offset per character name) so
-   Tier 1 audio sounds differentiated *out of the box* even before manual
-   tuning?
-4. **Scope for v1**: should this land as one change, or phased —
-   e.g., Phase 1 = always-run cast/scene identification (no rendering
-   changes yet, just make the data available and show it in Console/Cast
-   Manager); Phase 2 = wire `voice_mode` into actual rendering/mixing.
+1. **LLM cost at Tier 1**: **full LLM attribution pass for all tiers** —
+   same quality/cost model Tier 2/3 already pays today. No cheaper
+   heuristic-only carve-out for Tier 1.
+2. **Naming**: **`voice_mode` is its own separate concept from `tier`** —
+   not folded into tier vocabulary. Confirmed values:
+   `single_narrator_modulated` / `multi_voice`.
+3. **Default per-character modulation**: **all-neutral by default.** A
+   newly-identified character's `MemPalace` drawer gets neutral
+   `speed`/`pitch`/`volume`/`energy_bias` (identical to Narrator) until the
+   user manually tunes them via Cast Manager. No automatic hash-based
+   pitch offset.
+4. **Phasing**: **two phases**, landed and reviewed separately:
+   - **Phase A (this change)**: remove the Tier-1 bypasses so cast/scene
+     identification always runs and is stored/visible, regardless of
+     `voice_mode`/tier. No rendering/mixing behavior changes yet —
+     `production_mixer.py` keeps overwriting to `"Narrator"` for now, so
+     actual Tier-1 audio output is unchanged in this phase.
+   - **Phase B (follow-up)**: wire `voice_mode` into
+     `production_mixer.mix_voice_track`, drop the `"Narrator"` overwrite,
+     un-hide Cast Manager for Express/Tier 1, add the "use narrator voice,
+     just modulated" default row.
 
 ## 6. Non-goals for this change
 - Not changing Tier 2/3's existing multi-voice behavior.
